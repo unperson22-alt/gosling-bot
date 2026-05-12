@@ -6,6 +6,22 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import anthropic
 
+def _anthropic_call(client, **kwargs):
+    """Вызов Anthropic API с retry при 529 OverloadedError."""
+    import time
+    last_err = None
+    for delay in [0, 2, 4, 8]:
+        try:
+            if delay:
+                time.sleep(delay)
+            return _anthropic_call(client, **kwargs)
+        except Exception as e:
+            if "529" in str(e) or "overloaded" in str(e).lower():
+                last_err = e
+                continue
+            raise
+    raise last_err
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -182,7 +198,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conversation_history[chat_id] = conversation_history[chat_id][-10:]
 
     try:
-        response = client.messages.create(
+        response = _anthropic_call(client, 
             model="claude-haiku-4-5-20251001",
             max_tokens=300,
             system=GOSLING_SYSTEM,
