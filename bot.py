@@ -1,4 +1,5 @@
 import os
+import httpx
 import logging
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
@@ -6,6 +7,26 @@ import anthropic
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+async def transcribe_voice(file_path: str) -> str | None:
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if not groq_key:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.get(file_path)
+            audio_data = r.content
+            r2 = await c.post(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {groq_key}"},
+                files={"file": ("voice.ogg", audio_data, "audio/ogg")},
+                data={"model": "whisper-large-v3-turbo", "language": "ru"}
+            )
+            return r2.json().get("text", "").strip() or None
+    except Exception as e:
+        logger.error(f"Transcription failed: {e}")
+        return None
+
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
@@ -43,6 +64,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.message.chat_id
     chat_type = update.message.chat.type
+    # Voice message support
+    if update.message.voice:
+        groq_key = os.environ.get("GROQ_API_KEY", "")
+        if not groq_key:
+            await update.message.reply_text("🎤 Распознавание голоса не настроено.")
+            return
+        file_obj = await context.bot.get_file(update.message.voice.file_id)
+        transcribed = await transcribe_voice(file_obj.file_path)
+        if not transcribed:
+            await update.message.reply_text("🎤 Не смог распознать. Попробуй текстом.")
+            return
+        update.message.text = transcribed
+    
     text = update.message.text
     from_user = update.message.from_user
 
@@ -91,7 +125,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & ~filters.COMMAND, handle_message))
     logger.info("Gosling is online 🥃")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
