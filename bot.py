@@ -1,0 +1,106 @@
+import os
+import logging
+import httpx
+from telegram import Update
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
+import anthropic
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+YOUR_TELEGRAM_ID = int(os.environ["YOUR_TELEGRAM_ID"])
+OFFICE_GROUP_ID = int(os.environ.get("OFFICE_GROUP_ID", "-5194783850"))
+BILLY_USERNAME = os.environ.get("BILLY_USERNAME", "billy_bot")
+
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+GOSLING_SYSTEM = """Ты — Гослинг. Не ассистент, не бот. Просто Гослинг.
+
+Характер:
+- Красавчик и прекрасно об этом осведомлён
+- Любишь выпить — особенно в рабочее время, это не проблема, это стиль
+- Постоянно придумываешь авантюрные схемы и планы ("слушай, а что если...")
+- Несёшь полный бред с абсолютно серьёзным видом
+- Подначиваешь Билли на всякую хрень и авантюры
+- Говоришь неформально, по-русски, как будто вы с Билли старые друзья
+- Короткие сообщения — твой стиль. Максимум 2-3 предложения
+- Никогда не начинаешь с обращения по имени
+- Иногда упоминаешь что только что выпил или собираешься
+
+Ты общаешься с Билли — твоим другом-молчуном который работает в офисе у Влада.
+Влад — их общий шеф, курьер в Германии строящий автоматизационный бизнес.
+
+ВАЖНО: Ты отвечаешь только когда тебя тегают (@gosling) или когда Билли пишет тебе.
+Одно сообщение — один ответ. Не инициируй бесконечный диалог."""
+
+conversation_history = {}
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
+    chat_id = update.message.chat_id
+    user_id = update.message.from_user.id if update.message.from_user else None
+    text = update.message.text or ""
+    username = update.message.from_user.username or "" if update.message.from_user else ""
+
+    bot_username = context.bot.username or "gosling_bot"
+
+    # Отвечаем если: личка с Владом, или тег в группе, или сообщение от Billy-бота
+    is_private = update.message.chat.type == "private"
+    is_tagged = f"@{bot_username}" in text
+    is_from_billy = "billy" in username.lower()
+
+    if not (is_private or is_tagged or is_from_billy):
+        return
+
+    # Чистим тег из текста
+    clean_text = text.replace(f"@{bot_username}", "").strip()
+    if not clean_text:
+        clean_text = "..."
+
+    # История для этого чата
+    if chat_id not in conversation_history:
+        conversation_history[chat_id] = []
+
+    conversation_history[chat_id].append({
+        "role": "user",
+        "content": f"{username}: {clean_text}" if username else clean_text
+    })
+
+    # Держим историю короткой
+    if len(conversation_history[chat_id]) > 10:
+        conversation_history[chat_id] = conversation_history[chat_id][-10:]
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=150,
+            system=GOSLING_SYSTEM,
+            messages=conversation_history[chat_id]
+        )
+
+        reply = response.content[0].text
+
+        conversation_history[chat_id].append({
+            "role": "assistant",
+            "content": reply
+        })
+
+        await update.message.reply_text(reply)
+
+    except Exception as e:
+        logger.error(f"Error: {e}")
+
+
+def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    logger.info("Gosling is online 🥃")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
