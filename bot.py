@@ -29,20 +29,47 @@ async def transcribe_voice(file_path: str) -> str | None:
         return None
 
 
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 YOUR_TELEGRAM_ID = int(os.environ["YOUR_TELEGRAM_ID"])
-OFFICE_GROUP_ID = int(os.environ.get("OFFICE_CHAT_ID", "-5194783850"))
-BILLY_USERNAME = os.environ.get("BILLY_USERNAME", "billy_vlad_bot")
+OFFICE_GROUP_ID  = int(os.environ.get("OFFICE_CHAT_ID", "-5194783850"))
+BILLY_USERNAME   = os.environ.get("BILLY_USERNAME", "billy_vlad_bot")
+MAMA_BOT_URL     = os.environ.get("MAMA_BOT_URL", "")
 
-# Usernames of all office bots (except Gosling himself and Billy)
-OTHER_BOT_USERNAMES = {
-    "tilly_vlad_bot", "milly_vlad_bot", "filly_vlad_bot",
-    "cilly_vlad_bot", "dilly_vlad_bot", "villy_vlad_bot",
-    "prophet_vlad_bot", "mama_vlad_bot", "trader_vlad_bot"
-}
+BOT_REPLY_CHANCE = 0.15
 
-BOT_REPLY_CHANCE = 0.15  # 15% chance to reply to other bots
+# Keywords that signal an image generation request
+IMAGE_TRIGGERS = [
+    "нарисуй", "нарисуйте", "сгенери", "сгенерируй",
+    "покажи картинку", "создай картинку", "draw", "generate image",
+    "создай ", "сделай картинку", "изобрази", "создай слона",
+    "создай кота", "создай пса", "нарисуй мне",
+]
+
+def wants_image(text: str) -> bool:
+    t = text.lower()
+    # Generic "создай <что угодно кроме слов типа бота/сценария/etc>"
+    non_image_words = ["бота", "сценарий", "скрипт", "схему", "таблицу", "список", "задачу"]
+    if "создай" in t and not any(w in t for w in non_image_words):
+        return True
+    return any(trigger in t for trigger in IMAGE_TRIGGERS)
+
+async def request_image(prompt: str, requester: str = "Гослинг") -> bool:
+    """Ask mama-bot to generate and post image to office chat."""
+    if not MAMA_BOT_URL:
+        logger.warning("MAMA_BOT_URL not set, can't generate image")
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=95) as c:
+            r = await c.post(
+                f"{MAMA_BOT_URL}/generate",
+                json={"prompt": prompt, "requester": requester},
+                timeout=95
+            )
+            return r.status_code == 200
+    except Exception as e:
+        logger.error(f"Image request failed: {e}")
+        return False
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -108,7 +135,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif chat_type not in ["group", "supergroup"]:
         return
 
-    # Determine if sender is a bot and which one
     sender_username = (from_user.username or "").lower()
     is_billy = sender_username == BILLY_USERNAME.lower()
     is_other_bot = from_user.is_bot and not is_billy
@@ -116,7 +142,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Decide whether to respond
     if is_other_bot:
         if not (random.random() < BOT_REPLY_CHANCE):
-            logger.info(f"Skipping bot message from @{sender_username} (rolled no)")
             return
         logger.info(f"Responding to bot @{sender_username} (15% hit)")
     elif is_billy:
@@ -131,6 +156,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clean_text = "..."
 
     username = from_user.username or from_user.first_name or "кто-то"
+
+    # Check if this is an image generation request
+    if wants_image(clean_text):
+        await update.message.reply_text("🎨 Щас нарисую, подожди...")
+        success = await request_image(clean_text, requester=username)
+        if not success:
+            await update.message.reply_text("Не получилось, Морти. Эллис недоступна.")
+        return
 
     if chat_id not in conversation_history:
         conversation_history[chat_id] = []
