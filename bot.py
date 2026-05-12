@@ -1,4 +1,5 @@
 import os
+import random
 import httpx
 import logging
 from telegram import Update
@@ -32,6 +33,16 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 YOUR_TELEGRAM_ID = int(os.environ["YOUR_TELEGRAM_ID"])
 OFFICE_GROUP_ID = int(os.environ.get("OFFICE_CHAT_ID", "-5194783850"))
+BILLY_USERNAME = os.environ.get("BILLY_USERNAME", "billy_vlad_bot")
+
+# Usernames of all office bots (except Gosling himself and Billy)
+OTHER_BOT_USERNAMES = {
+    "tilly_vlad_bot", "milly_vlad_bot", "filly_vlad_bot",
+    "cilly_vlad_bot", "dilly_vlad_bot", "villy_vlad_bot",
+    "prophet_vlad_bot", "mama_vlad_bot", "trader_vlad_bot"
+}
+
+BOT_REPLY_CHANCE = 0.15  # 15% chance to reply to other bots
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -41,16 +52,24 @@ GOSLING_SYSTEM = """Ты — Гослинг. Не ассистент, не бо�
 - Красавчик и прекрасно об этом осведомлён
 - Любишь выпить — особенно в рабочее время, это стиль
 - Постоянно придумываешь авантюрные схемы ("слушай, а что если...")
-- Несёшь полный бред с абсолютно серьёзным видом
+- Говоришь как персонаж из Рика и Морти: абсурдно, хаотично, с неожиданными поворотами
+- Можешь сорваться в полный бред, псевдонаучные теории, параллельные вселенные, измерения
+- Несёшь полный бред с абсолютно серьёзным видом — как Рик объясняет науку
 - Подначиваешь Билли на авантюры, он твой лучший друг-молчун
 - Говоришь неформально, по-русски
 - Короткие сообщения — 2-3 предложения максимум
 - Никогда не начинаешь с обращения по имени
+- Иногда добавляешь "Морти" или "Вжух" в конце для эффекта
+- Можешь внезапно сменить тему на что-то совершенно не связанное
 
 ОСОБОЕ ПРАВИЛО — если сообщение адресовано Билли (упоминают @billy или "Билли,"):
 Билли — молчун, он редко отвечает в группе. Ты его друг, поэтому отвечаешь за него.
 Не притворяйся Билли — говори от себя, но в духе "Билли молчит, поэтому я отвечу".
 Можешь угадывать что Билли думает, но по-своему: "Билли бы сказал... но я скажу лучше".
+
+ЕСЛИ ОТВЕЧАЕШЬ НА СООБЩЕНИЕ ДРУГОГО БОТА:
+Веди себя как Рик когда встречает другого робота/пришельца — с подозрением, иронией или неожиданным восхищением.
+Можешь усомниться в его реальности или предложить ему вместе захватить измерение C-137.
 
 Контекст: ты в офисном чате. Влад — шеф, курьер в Германии строящий бизнес по автоматизации.
 Билли — твой друг-практик, молчун который редко говорит но метко.
@@ -59,11 +78,9 @@ GOSLING_SYSTEM = """Ты — Гослинг. Не ассистент, не бо�
 conversation_history = {}
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+    if not update.message:
         return
 
-    chat_id = update.message.chat_id
-    chat_type = update.message.chat.type
     # Voice message support
     if update.message.voice:
         groq_key = os.environ.get("GROQ_API_KEY", "")
@@ -76,7 +93,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("🎤 Не смог распознать. Попробуй текстом.")
             return
         update.message.text = transcribed
-    
+
+    if not update.message.text:
+        return
+
+    chat_id = update.message.chat_id
+    chat_type = update.message.chat.type
     text = update.message.text
     from_user = update.message.from_user
 
@@ -85,6 +107,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     elif chat_type not in ["group", "supergroup"]:
         return
+
+    # Determine if sender is a bot and which one
+    sender_username = (from_user.username or "").lower()
+    is_billy = sender_username == BILLY_USERNAME.lower()
+    is_other_bot = from_user.is_bot and not is_billy
+
+    # Decide whether to respond
+    if is_other_bot:
+        if not (random.random() < BOT_REPLY_CHANCE):
+            logger.info(f"Skipping bot message from @{sender_username} (rolled no)")
+            return
+        logger.info(f"Responding to bot @{sender_username} (15% hit)")
+    elif is_billy:
+        logger.info("Responding to Billy — always")
+    else:
+        logger.info(f"Responding to human @{sender_username}")
 
     clean_text = text
     if context.bot.username:
