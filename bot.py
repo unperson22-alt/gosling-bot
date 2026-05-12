@@ -59,12 +59,7 @@ GOSLING_SYSTEM = """Ты — Гослинг. Не ассистент, не бо�
 conversation_history = {}
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-
-    # Поддержка text, caption (медиа-посты) и voice
-    text = update.message.text or update.message.caption or ""
-    if not text and not update.message.voice:
+    if not update.message or not update.message.text:
         return
 
     chat_id = update.message.chat_id
@@ -80,8 +75,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not transcribed:
             await update.message.reply_text("🎤 Не смог распознать. Попробуй текстом.")
             return
-        text = transcribed
+        update.message.text = transcribed
     
+    text = update.message.text
     from_user = update.message.from_user
 
     if chat_type == "private":
@@ -112,7 +108,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=150,
+            max_tokens=300,
             system=GOSLING_SYSTEM,
             messages=conversation_history[chat_id]
         )
