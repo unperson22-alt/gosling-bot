@@ -184,7 +184,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         response = _anthropic_call(client, 
             model="claude-haiku-4-5-20251001",
-            max_tokens=300,
+            max_tokens=1024,
             system=GOSLING_SYSTEM,
             messages=conversation_history[chat_id]
         )
