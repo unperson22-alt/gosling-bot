@@ -69,17 +69,16 @@ def wants_image(text: str) -> bool:
         return True
     return any(trigger in t for trigger in IMAGE_TRIGGERS)
 
-async def request_image(prompt: str, requester: str = "Гослинг") -> bool:
+async def request_image(prompt: str, requester: str = "Гослинг", chat_id: int = None) -> bool:
     if not MAMA_BOT_URL:
         logger.warning("MAMA_BOT_URL not set, can't generate image")
         return False
     try:
+        payload = {"prompt": prompt, "requester": requester}
+        if chat_id:
+            payload["chat_id"] = chat_id
         async with httpx.AsyncClient(timeout=95) as c:
-            r = await c.post(
-                f"{MAMA_BOT_URL}/generate",
-                json={"prompt": prompt, "requester": requester},
-                timeout=95
-            )
+            r = await c.post(f"{MAMA_BOT_URL}/generate", json=payload, timeout=95)
             return r.status_code == 200
     except Exception as e:
         logger.error(f"Image request failed: {e}")
