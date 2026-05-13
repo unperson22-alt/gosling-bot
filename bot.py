@@ -52,7 +52,9 @@ OFFICE_GROUP_ID  = int(os.environ.get("OFFICE_CHAT_ID", "-5194783850"))
 BILLY_USERNAME   = os.environ.get("BILLY_USERNAME", "billy_vlad_bot")
 PILLY_BOT_URL    = os.environ.get("PILLY_BOT_URL", "")
 
-BOT_REPLY_CHANCE = 0.15
+BOT_REPLY_CHANCE   = 0.15  # боты
+HUMAN_REPLY_CHANCE = 0.20  # обычные люди
+LUK_REPLY_CHANCE   = 0.50  # Лук — свой чел
 LUK_USER_ID = 331989769
 
 IMAGE_TRIGGERS = [
@@ -148,8 +150,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Responding to bot @{sender_username} (15% hit)")
     elif is_billy:
         logger.info("Responding to Billy -- always")
+    elif is_luk:
+        if not (random.random() < LUK_REPLY_CHANCE):
+            return
+        logger.info(f"Responding to Luk (50% hit)")
     else:
-        logger.info(f"Responding to human @{sender_username} | Luk: {is_luk}")
+        if not (random.random() < HUMAN_REPLY_CHANCE):
+            return
+        logger.info(f"Responding to human @{sender_username} (20% hit)")
 
     clean_text = text
     if context.bot.username:
