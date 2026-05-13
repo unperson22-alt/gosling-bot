@@ -50,7 +50,7 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 YOUR_TELEGRAM_ID = int(os.environ["YOUR_TELEGRAM_ID"])
 OFFICE_GROUP_ID  = int(os.environ.get("OFFICE_CHAT_ID", "-5194783850"))
 BILLY_USERNAME   = os.environ.get("BILLY_USERNAME", "billy_vlad_bot")
-MAMA_BOT_URL     = os.environ.get("MAMA_BOT_URL", "")
+PILLY_BOT_URL    = os.environ.get("PILLY_BOT_URL", "")
 
 BOT_REPLY_CHANCE = 0.15
 LUK_USER_ID = 331989769
@@ -70,15 +70,15 @@ def wants_image(text: str) -> bool:
     return any(trigger in t for trigger in IMAGE_TRIGGERS)
 
 async def request_image(prompt: str, requester: str = "Гослинг", chat_id: int = None) -> bool:
-    if not MAMA_BOT_URL:
-        logger.warning("MAMA_BOT_URL not set, can't generate image")
+    if not PILLY_BOT_URL:
+        logger.warning("PILLY_BOT_URL not set, can't generate image")
         return False
     try:
         payload = {"prompt": prompt, "requester": requester}
         if chat_id:
             payload["chat_id"] = chat_id
         async with httpx.AsyncClient(timeout=95) as c:
-            r = await c.post(f"{MAMA_BOT_URL}/generate", json=payload, timeout=95)
+            r = await c.post(f"{PILLY_BOT_URL}/generate", json=payload, timeout=95)
             return r.status_code == 200
     except Exception as e:
         logger.error(f"Image request failed: {e}")
