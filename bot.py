@@ -1,20 +1,20 @@
 import os
 import random
+import asyncio
 import httpx
 import logging
+from anthropic import AsyncAnthropic
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
-import anthropic
 
-def _anthropic_call(client, **kwargs):
-    """Вызов Anthropic API с retry при 529 OverloadedError."""
-    import time
+async def _anthropic_call(client, **kwargs):
+    """Вызов Anthropic API с retry при 529 OverloadedError. Async-safe."""
     last_err = None
     for delay in [0, 2, 4, 8]:
         try:
             if delay:
-                time.sleep(delay)
-            return client.messages.create(**kwargs)
+                await asyncio.sleep(delay)
+            return await client.messages.create(**kwargs)
         except Exception as e:
             if "529" in str(e) or "overloaded" in str(e).lower():
                 last_err = e
@@ -86,7 +86,7 @@ async def request_image(prompt: str, requester: str = "Гослинг", chat_id:
         logger.error(f"Image request failed: {e}")
         return False
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 GOSLING_SYSTEM = """Ты -- Гослинг. Не ассистент, не бот. Просто Гослинг.
 
@@ -192,7 +192,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conversation_history[chat_id] = conversation_history[chat_id][-10:]
 
     try:
-        response = _anthropic_call(client, 
+        response = await _anthropic_call(client, 
             model="claude-haiku-4-5-20251001",
             max_tokens=1024,
             system=GOSLING_SYSTEM,
