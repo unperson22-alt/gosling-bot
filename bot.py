@@ -53,7 +53,7 @@ BILLY_USERNAME   = os.environ.get("BILLY_USERNAME", "billy_vlad_bot")
 PILLY_BOT_URL    = os.environ.get("PILLY_BOT_URL", "")
 
 BOT_REPLY_CHANCE   = 0.30  # боты
-HUMAN_REPLY_CHANCE = 0.20  # обычные люди
+HUMAN_REPLY_CHANCE = 0.40  # обычные люди
 LUK_REPLY_CHANCE   = 0.50  # Лук — свой чел
 LUK_USER_ID = 331989769
 
