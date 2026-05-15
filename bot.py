@@ -6,6 +6,7 @@ import logging
 from anthropic import AsyncAnthropic
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from aiohttp import web
 
 # ── Ollama config ────────────────────────────────────────────────────────────
 OLLAMA_HOST    = os.environ.get("OLLAMA_HOST", "").strip().rstrip("/\\")
@@ -63,6 +64,7 @@ async def _anthropic_call(client, **kwargs):
     raise last_err
 
 logging.basicConfig(level=logging.INFO)
+HTTP_PORT = int(os.getenv("PORT", 8080))
 logger = logging.getLogger(__name__)
 
 async def transcribe_voice(file_path: str) -> str | None:
@@ -249,12 +251,59 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error: {e}")
 
 
-def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & ~filters.COMMAND, handle_message))
-    logger.info("Gosling is online")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+async def generate_response(text: str, user_id: int) -> str:
+    """Выделенная функция генерации — используется Telegram handler и HTTP /task."""
+    if user_id not in conversation_history:
+        conversation_history[user_id] = []
+    conversation_history[user_id].append({"role": "user", "content": text})
+    if len(conversation_history[user_id]) > 10:
+        conversation_history[user_id] = conversation_history[user_id][-10:]
+    try:
+        response = await _anthropic_call(client,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            system=GOSLING_SYSTEM,
+            messages=conversation_history[user_id]
+        )
+        reply = response.content[0].text
+        conversation_history[user_id].append({"role": "assistant", "content": reply})
+        return reply
+    except Exception as e:
+        logger.error(f"generate_response error: {e}")
+        return "..."
+
+
+async def handle_task(request):
+    """HTTP endpoint для роутинга от Филли."""
+    try:
+        data = await request.json()
+        message = data.get("message", "")
+        user_id = int(data.get("user_id", YOUR_TELEGRAM_ID))
+        reply = await generate_response(message, user_id)
+        return web.json_response({"status": "ok", "response": reply})
+    except Exception as e:
+        logger.error(f"handle_task error: {e}")
+        return web.json_response({"status": "error", "error": str(e)}, status=500)
+
+
+async def main():
+    app_http = web.Application()
+    app_http.router.add_post("/task", handle_task)
+    runner = web.AppRunner(app_http)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", HTTP_PORT).start()
+    logger.info(f"Gosling HTTP on :{HTTP_PORT}")
+
+    ptb = Application.builder().token(TELEGRAM_TOKEN).build()
+    ptb.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & ~filters.COMMAND, handle_message))
+    async with ptb:
+        await ptb.start()
+        await ptb.updater.start_polling(drop_pending_updates=True)
+        logger.info("Gosling is online")
+        await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
+ main()
