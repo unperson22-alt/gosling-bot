@@ -1,9 +1,11 @@
 import os
+import json
 import random
 import asyncio
 import httpx
 import logging
 from anthropic import AsyncAnthropic
+import redis.asyncio as aioredis
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from aiohttp import web
@@ -94,6 +96,8 @@ OFFICE_GROUP_ID  = int(os.environ.get("OFFICE_CHAT_ID", "-5194783850"))
 BILLY_USERNAME   = os.environ.get("BILLY_USERNAME", "billy_vlad_bot")
 PILLY_BOT_URL    = os.environ.get("PILLY_BOT_URL", "")
 BOT_USERNAME     = None  # заполняется при старте
+BOT_NAME         = "Гослинг"
+REDIS_URL        = os.environ.get("REDIS_URL", "redis://localhost:6379")
 
 BOT_REPLY_CHANCE   = 0.30  # боты
 HUMAN_REPLY_CHANCE = 0.40  # обычные люди
@@ -151,7 +155,26 @@ GOSLING_SYSTEM = """Ты -- Гослинг. Не ассистент, не бот
 
 Не используй Markdown-разметку (##, **, таблицы, ---) — пиши простым текстом, для структуры используй цифры, тире и символ •."""
 
-conversation_history = {}
+redis_client: aioredis.Redis = None
+
+
+async def redis_get_history(key: int) -> list:
+    try:
+        raw = await redis_client.get(f"history:{BOT_NAME}:{key}")
+        return json.loads(raw) if raw else []
+    except Exception as e:
+        logger.warning(f"Redis get history failed: {e}")
+        return []
+
+async def redis_save_history(key: int, history: list):
+    try:
+        await redis_client.setex(
+            f"history:{BOT_NAME}:{key}",
+            86400 * 30,
+            json.dumps(history, ensure_ascii=False)
+        )
+    except Exception as e:
+        logger.warning(f"Redis save history failed: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -238,27 +261,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Не получилось, Морти. Эллис недоступна.")
         return
 
-    if chat_id not in conversation_history:
-        conversation_history[chat_id] = []
-
-    conversation_history[chat_id].append({
+    history = await redis_get_history(chat_id)
+    history.append({
         "role": "user",
         "content": f"{username}: {clean_text}"
     })
 
-    if len(conversation_history[chat_id]) > 10:
-        conversation_history[chat_id] = conversation_history[chat_id][-10:]
+    if len(history) > 10:
+        history = history[-10:]
 
     try:
         response = await _anthropic_call(client, 
             model="claude-sonnet-4-6",
             max_tokens=1024,
             system=GOSLING_SYSTEM,
-            messages=conversation_history[chat_id]
+            messages=history
         )
 
         reply = response.content[0].text
-        conversation_history[chat_id].append({"role": "assistant", "content": reply})
+        history.append({"role": "assistant", "content": reply})
+        await redis_save_history(chat_id, history)
 
         await update.message.reply_text(reply)
         logger.info(f"Gosling replied: {reply[:60]}")
@@ -270,20 +292,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def generate_response(text: str, user_id: int) -> str:
     """Выделенная функция генерации — используется Telegram handler и HTTP /task."""
-    if user_id not in conversation_history:
-        conversation_history[user_id] = []
-    conversation_history[user_id].append({"role": "user", "content": text})
-    if len(conversation_history[user_id]) > 10:
-        conversation_history[user_id] = conversation_history[user_id][-10:]
+    history = await redis_get_history(user_id)
+    history.append({"role": "user", "content": text})
+    if len(history) > 10:
+        history = history[-10:]
     try:
         response = await _anthropic_call(client,
             model="claude-sonnet-4-6",
             max_tokens=512,
             system=GOSLING_SYSTEM,
-            messages=conversation_history[user_id]
+            messages=history
         )
         reply = response.content[0].text
-        conversation_history[user_id].append({"role": "assistant", "content": reply})
+        history.append({"role": "assistant", "content": reply})
+        await redis_save_history(user_id, history)
         return reply
     except Exception as e:
         logger.error(f"generate_response error: {e}")
@@ -322,6 +344,8 @@ async def handle_task(request):
 
 
 async def main():
+    global redis_client
+    redis_client = aioredis.from_url(REDIS_URL, decode_responses=False)
     app_http = web.Application()
     app_http.router.add_post("/task", handle_task)
     runner = web.AppRunner(app_http)
