@@ -93,6 +93,7 @@ YOUR_TELEGRAM_ID = int(os.environ["YOUR_TELEGRAM_ID"])
 OFFICE_GROUP_ID  = int(os.environ.get("OFFICE_CHAT_ID", "-5194783850"))
 BILLY_USERNAME   = os.environ.get("BILLY_USERNAME", "billy_vlad_bot")
 PILLY_BOT_URL    = os.environ.get("PILLY_BOT_URL", "")
+BOT_USERNAME     = None  # заполняется при старте
 
 BOT_REPLY_CHANCE   = 0.30  # боты
 HUMAN_REPLY_CHANCE = 0.40  # обычные люди
@@ -188,20 +189,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_billy = sender_username == BILLY_USERNAME.lower()
     is_other_bot = from_user.is_bot and not is_billy
 
-    if is_other_bot:
+    # Прямое @упоминание — всегда отвечаем
+    is_direct_mention = (
+        (BOT_USERNAME and f"@{BOT_USERNAME}".lower() in text.lower()) or
+        "гослинг" in text.lower()
+    )
+    # Reply на сообщение Гослинга — всегда отвечаем
+    is_reply_to_me = (
+        update.message.reply_to_message and
+        update.message.reply_to_message.from_user and
+        BOT_USERNAME and
+        update.message.reply_to_message.from_user.username == BOT_USERNAME
+    )
+
+    if is_direct_mention or is_reply_to_me:
+        logger.info(f"Direct mention/reply from @{sender_username} — always responding")
+    elif is_other_bot:
         if not (random.random() < BOT_REPLY_CHANCE):
             return
-        logger.info(f"Responding to bot @{sender_username} (15% hit)")
+        logger.info(f"Responding to bot @{sender_username} ({int(BOT_REPLY_CHANCE*100)}% hit)")
     elif is_billy:
         logger.info("Responding to Billy -- always")
     elif is_luk:
         if not (random.random() < LUK_REPLY_CHANCE):
             return
-        logger.info(f"Responding to Luk (50% hit)")
+        logger.info(f"Responding to Luk ({int(LUK_REPLY_CHANCE*100)}% hit)")
     else:
         if not (random.random() < HUMAN_REPLY_CHANCE):
             return
-        logger.info(f"Responding to human @{sender_username} (20% hit)")
+        logger.info(f"Responding to human @{sender_username} ({int(HUMAN_REPLY_CHANCE*100)}% hit)")
 
     clean_text = text
     if context.bot.username:
@@ -235,7 +251,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         response = await _anthropic_call(client, 
-            model="claude-haiku-4-5-20251001",
+            model="claude-sonnet-4-6",
             max_tokens=1024,
             system=GOSLING_SYSTEM,
             messages=conversation_history[chat_id]
@@ -261,7 +277,7 @@ async def generate_response(text: str, user_id: int) -> str:
         conversation_history[user_id] = conversation_history[user_id][-10:]
     try:
         response = await _anthropic_call(client,
-            model="claude-haiku-4-5-20251001",
+            model="claude-sonnet-4-6",
             max_tokens=512,
             system=GOSLING_SYSTEM,
             messages=conversation_history[user_id]
@@ -299,6 +315,10 @@ async def main():
     ptb.add_handler(MessageHandler((filters.TEXT | filters.VOICE) & ~filters.COMMAND, handle_message))
     async with ptb:
         await ptb.start()
+        global BOT_USERNAME
+        me = await ptb.bot.get_me()
+        BOT_USERNAME = me.username
+        logger.info(f"Bot username: @{BOT_USERNAME}")
         await ptb.updater.start_polling(drop_pending_updates=True)
         logger.info("Gosling is online")
         await asyncio.Event().wait()
