@@ -290,10 +290,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-async def generate_response(text: str, user_id: int) -> str:
+async def generate_response(text: str, user_id: int, group_ctx: str = "") -> str:
     """Выделенная функция генерации — используется Telegram handler и HTTP /task."""
     history = await redis_get_history(user_id)
-    history.append({"role": "user", "content": text})
+    if group_ctx:
+        full_text = f"[Контекст группового чата]\n{group_ctx}\n\n[Запрос]\n{text}"
+    else:
+        full_text = text
+    history.append({"role": "user", "content": full_text})
     if len(history) > 10:
         history = history[-10:]
     try:
@@ -332,9 +336,10 @@ async def handle_task(request):
     """
     try:
         data = await request.json()
-        message = data.get("message", "")
-        user_id = int(data.get("user_id", YOUR_TELEGRAM_ID))
-        reply = await generate_response(message, user_id)
+        message   = data.get("message", "")
+        user_id   = int(data.get("user_id", YOUR_TELEGRAM_ID))
+        group_ctx = data.get("group_ctx", "")
+        reply = await generate_response(message, user_id, group_ctx=group_ctx)
         # Отправляем в группу сами — Филли видит 200 и молчит
         await send_to_group(reply)
         return web.json_response({"status": "ok", "response": reply})
