@@ -189,10 +189,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_billy = sender_username == BILLY_USERNAME.lower()
     is_other_bot = from_user.is_bot and not is_billy
 
-    # Прямое @упоминание — всегда отвечаем
+    # Прямое @упоминание через @username — всегда отвечаем
+    # "гослинг" в тексте НЕ триггерит здесь — это роутит Филли через HTTP
     is_direct_mention = (
-        (BOT_USERNAME and f"@{BOT_USERNAME}".lower() in text.lower()) or
-        "гослинг" in text.lower()
+        BOT_USERNAME and f"@{BOT_USERNAME}".lower() in text.lower()
     )
     # Reply на сообщение Гослинга — всегда отвечаем
     is_reply_to_me = (
@@ -290,13 +290,31 @@ async def generate_response(text: str, user_id: int) -> str:
         return "..."
 
 
+async def send_to_group(text: str):
+    """Отправляет сообщение в офисную группу."""
+    if not OFFICE_GROUP_ID:
+        return
+    try:
+        async with httpx.AsyncClient() as c:
+            await c.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": OFFICE_GROUP_ID, "text": text},
+                timeout=10
+            )
+    except Exception as e:
+        logger.error(f"send_to_group failed: {e}")
+
 async def handle_task(request):
-    """HTTP endpoint для роутинга от Филли."""
+    """HTTP endpoint для роутинга от Филли.
+    Отправляет ответ в группу сам — чтобы Филли не делал двойной fallback.
+    """
     try:
         data = await request.json()
         message = data.get("message", "")
         user_id = int(data.get("user_id", YOUR_TELEGRAM_ID))
         reply = await generate_response(message, user_id)
+        # Отправляем в группу сами — Филли видит 200 и молчит
+        await send_to_group(reply)
         return web.json_response({"status": "ok", "response": reply})
     except Exception as e:
         logger.error(f"handle_task error: {e}")
