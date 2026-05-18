@@ -274,7 +274,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = await _anthropic_call(client, 
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            system=GOSLING_SYSTEM,
+            system=await build_system(user_id),
             messages=history
         )
 
@@ -288,6 +288,108 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error: {e}")
 
+
+
+# ── ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ ─────────────────────────────────────────────────────
+async def redis_get_notes(user_id: int) -> str:
+    try:
+        raw = await redis_client.get(f"notes:{BOT_NAME}:{user_id}")
+        return raw.decode() if raw else ""
+    except Exception as e:
+        logger.warning(f"Redis get notes failed: {e}")
+        return ""
+
+async def redis_add_note(user_id: int, note: str):
+    try:
+        existing = await redis_get_notes(user_id)
+        updated = (existing + "\n" + note).strip()
+        await redis_client.set(f"notes:{BOT_NAME}:{user_id}", updated)
+    except Exception as e:
+        logger.warning(f"Redis add note failed: {e}")
+
+async def auto_extract_interests(message: str, user_id: int):
+    """Фоновое авто-извлечение фактов о пользователе через Haiku."""
+    try:
+        existing = await redis_get_notes(user_id)
+        r = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=150,
+            system=(
+                "Ты извлекаешь факты о пользователе из его сообщений. "
+                "Найди конкретные факты, интересы, предпочтения или важные детали О ПОЛЬЗОВАТЕЛЕ. "
+                "Если нашёл что-то новое и конкретное — верни одну строку начинающуюся с [auto]. "
+                "Если ничего конкретного нет или это уже есть в заметках — верни пустую строку. "
+                "Не записывай временные состояния (устал, болит голова сегодня). "
+                "Только устойчивые факты: работа, семья, питание, хобби, предпочтения."
+            ),
+            messages=[{"role": "user", "content":
+                f"Сообщение: {message}\n\nУже известно:\n{existing or '(ничего)'}"}]
+        )
+        fact = r.content[0].text.strip()
+        if fact.startswith("[auto]"):
+            await redis_add_note(user_id, fact)
+            logger.info(f"Auto-extracted for {user_id}: {fact}")
+    except Exception as e:
+        logger.warning(f"auto_extract_interests failed: {e}")
+
+async def weekly_review(user_id: int):
+    """Еженедельная компактизация профиля через Haiku."""
+    try:
+        history = await redis_get_history(user_id)
+        notes = await redis_get_notes(user_id)
+        if not history and not notes:
+            return
+        history_text = "\n".join(
+            f"{m['role']}: {m['content'][:200]}" for m in history[-30:]
+        )
+        r = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            system=(
+                "Ты обновляешь профиль пользователя на основе переписки и старых заметок. "
+                "Создай компактный список фактов о пользователе (не более 10 строк). "
+                "Каждый факт с новой строки, начинается с [auto]. "
+                "Убери дубли, объедини похожее, удали устаревшее. "
+                "Только конкретные устойчивые факты."
+            ),
+            messages=[{"role": "user", "content":
+                f"Старые заметки:\n{notes or '(нет)'}\n\n"
+                f"Последние сообщения:\n{history_text}"}]
+        )
+        new_profile = r.content[0].text.strip()
+        await redis_client.set(f"notes:{BOT_NAME}:{user_id}", new_profile)
+        logger.info(f"Weekly review done for {user_id}")
+    except Exception as e:
+        logger.warning(f"weekly_review failed: {e}")
+
+async def build_system(user_id: int) -> str:
+    notes = await redis_get_notes(user_id)
+    if notes:
+        return GOSLING_SYSTEM + f"\n\nЗаметки о пользователе:\n{notes}"
+    return GOSLING_SYSTEM
+
+async def weekly_review_loop():
+    """Раз в неделю обновляет профили всех пользователей."""
+    import time as _time
+    WEEK = 7 * 24 * 3600
+    LAST_KEY = f"weekly_review:last_run:{BOT_NAME}"
+    while True:
+        try:
+            last_raw = await redis_client.get(LAST_KEY)
+            now = int(_time.time())
+            last = int(last_raw.decode()) if last_raw else 0
+            if (now - last) > WEEK:
+                await redis_client.set(LAST_KEY, str(now))
+                keys = await redis_client.keys(f"history:{BOT_NAME}:*")
+                logger.info(f"Weekly review: starting for {len(keys)} users")
+                for key in keys:
+                    uid_str = key.decode().split(":")[-1] if isinstance(key, bytes) else key.split(":")[-1]
+                    if uid_str.isdigit():
+                        await weekly_review(int(uid_str))
+                logger.info("Weekly review: done")
+        except Exception as e:
+            logger.warning(f"weekly_review_loop error: {e}")
+        await asyncio.sleep(3600)
 
 
 async def generate_response(text: str, user_id: int, group_ctx: str = "") -> str:
@@ -304,7 +406,7 @@ async def generate_response(text: str, user_id: int, group_ctx: str = "") -> str
         response = await _anthropic_call(client,
             model="claude-sonnet-4-6",
             max_tokens=512,
-            system=GOSLING_SYSTEM,
+            system=await build_system(user_id),
             messages=history
         )
         reply = response.content[0].text
@@ -351,6 +453,7 @@ async def handle_task(request):
 async def main():
     global redis_client
     redis_client = aioredis.from_url(REDIS_URL, decode_responses=False)
+    asyncio.create_task(weekly_review_loop())
     app_http = web.Application()
     app_http.router.add_post("/task", handle_task)
     runner = web.AppRunner(app_http)
