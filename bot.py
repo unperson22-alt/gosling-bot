@@ -6,6 +6,7 @@ import httpx
 import logging
 from anthropic import AsyncAnthropic
 import redis.asyncio as aioredis
+from ai_office_shared.shared.logging import log_event
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from aiohttp import web
@@ -97,6 +98,7 @@ BILLY_USERNAME   = os.environ.get("BILLY_USERNAME", "billy_vlad_bot")
 PILLY_BOT_URL    = os.environ.get("PILLY_BOT_URL", "")
 BOT_USERNAME     = None  # заполняется при старте
 BOT_NAME         = "Гослинг"
+BOT_NAME_LOWER   = "гослинг"  # для log_event
 REDIS_URL        = os.environ.get("REDIS_URL", "redis://localhost:6379")
 
 BOT_REPLY_CHANCE   = 0.30  # боты
@@ -394,6 +396,8 @@ async def weekly_review_loop():
 
 async def generate_response(text: str, user_id: int, group_ctx: str = "") -> str:
     """Выделенная функция генерации — используется Telegram handler и HTTP /task."""
+    await log_event(redis_client, BOT_NAME_LOWER, "message_received",
+                    user_id=user_id, is_group=bool(group_ctx))
     history = await redis_get_history(user_id)
     if group_ctx:
         full_text = f"[Контекст группового чата]\n{group_ctx}\n\n[Запрос]\n{text}"
@@ -412,6 +416,8 @@ async def generate_response(text: str, user_id: int, group_ctx: str = "") -> str
         reply = response.content[0].text
         history.append({"role": "assistant", "content": reply})
         await redis_save_history(user_id, history)
+        await log_event(redis_client, BOT_NAME_LOWER, "response_sent",
+                        user_id=user_id, is_group=bool(group_ctx))
         return reply
     except Exception as e:
         logger.error(f"generate_response error: {e}")
@@ -441,6 +447,8 @@ async def handle_task(request):
         message   = data.get("message", "")
         user_id   = int(data.get("user_id", YOUR_TELEGRAM_ID))
         group_ctx = data.get("group_ctx", "")
+        await log_event(redis_client, BOT_NAME_LOWER, "task_received",
+                        user_id=user_id, via="http")
         reply = await generate_response(message, user_id, group_ctx=group_ctx)
         # Отправляем в группу сами — Филли видит 200 и молчит
         await send_to_group(reply)
