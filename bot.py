@@ -201,6 +201,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type = update.message.chat.type
     text = update.message.text
     from_user = update.message.from_user
+    user_id = from_user.id
 
     is_luk = (from_user.id == LUK_USER_ID)
 
@@ -484,3 +485,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
