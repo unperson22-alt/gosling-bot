@@ -1,3 +1,4 @@
+Lines: 536
 import os
 import json
 import random
@@ -100,6 +101,21 @@ BOT_USERNAME     = None  # заполняется при старте
 BOT_NAME         = "Гослинг"
 BOT_NAME_LOWER   = "гослинг"  # для log_event
 REDIS_URL        = os.environ.get("REDIS_URL", "redis://localhost:6379")
+LOG_BOT_URL      = os.environ.get("LOG_BOT_URL", "")
+
+
+async def log(event: str, msg: str, from_: str = "", to_: str = ""):
+    """MSG_IN/MSG_OUT логирование в All Logs группу."""
+    if not LOG_BOT_URL:
+        return
+    try:
+        async with httpx.AsyncClient() as c:
+            payload = {"agent": BOT_NAME, "type": event, "message": msg}
+            if from_: payload["from"] = from_
+            if to_:   payload["to"]   = to_
+            await c.post(f"{LOG_BOT_URL}/log", json=payload, timeout=5)
+    except Exception:
+        pass
 
 BOT_REPLY_CHANCE   = 0.30  # боты
 HUMAN_REPLY_CHANCE = 0.40  # обычные люди
@@ -498,9 +514,11 @@ async def handle_task(request):
         group_ctx = data.get("group_ctx", "")
         await log_event(redis_client, BOT_NAME_LOWER, "task_received",
                         user_id=user_id, via="http")
+        await log("MSG_IN", message, from_="HTTP", to_=BOT_NAME)
         reply = await generate_response(message, user_id, group_ctx=group_ctx)
         # Отправляем в группу сами — Филли видит 200 и молчит
         await send_to_group(reply)
+        await log("MSG_OUT", f"{BOT_NAME}: {reply}", from_=BOT_NAME, to_="group")
         return web.json_response({"status": "ok", "response": reply})
     except Exception as e:
         logger.error(f"handle_task error: {e}")
@@ -533,4 +551,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
