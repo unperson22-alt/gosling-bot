@@ -8,6 +8,7 @@ import logging
 from anthropic import AsyncAnthropic
 import redis.asyncio as aioredis
 from ai_office_shared.shared.logging import log_event
+from ai_office_shared.shared.ollama import OllamaResult as _OllamaResult, try_ollama as _try_ollama
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from aiohttp import web
@@ -17,36 +18,6 @@ OLLAMA_HOST    = os.environ.get("OLLAMA_HOST", "").strip().rstrip("/\\")
 OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
 OLLAMA_ENABLED = os.environ.get("OLLAMA_ENABLED", "").lower() in ("1", "true", "yes")
 
-
-class _OllamaResult:
-    def __init__(self, text):
-        from types import SimpleNamespace
-        self.content = [SimpleNamespace(text=text)]
-
-
-async def _try_ollama(messages, system=None, timeout=20.0):
-    if not (OLLAMA_ENABLED and OLLAMA_HOST):
-        return None
-    try:
-        ol_messages = []
-        if system:
-            ol_messages.append({"role": "system", "content": system})
-        for m in messages:
-            content = m["content"] if isinstance(m["content"], str) else str(m["content"])
-            ol_messages.append({"role": m["role"], "content": content})
-        async with httpx.AsyncClient(timeout=timeout) as cli:
-            r = await cli.post(
-                f"{OLLAMA_HOST}/api/chat",
-                json={"model": OLLAMA_MODEL, "messages": ol_messages,
-                      "stream": False, "keep_alive": "30m"},
-            )
-            if r.status_code != 200:
-                return None
-            text = r.json().get("message", {}).get("content", "")
-            return _OllamaResult(text) if text else None
-    except Exception as e:
-        logger.info(f"Ollama unavailable, fallback to Anthropic: {type(e).__name__}: {e}")
-        return None
 
 
 async def _anthropic_call(client, **kwargs):
