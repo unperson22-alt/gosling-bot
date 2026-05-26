@@ -361,7 +361,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def redis_get_notes(user_id: int) -> str:
     try:
         raw = await redis_client.get(f"notes:{BOT_NAME}:{user_id}")
-        return raw.decode() if raw else ""
+        return raw or ""
     except Exception as e:
         logger.warning(f"Redis get notes failed: {e}")
         return ""
@@ -444,13 +444,13 @@ async def weekly_review_loop():
         try:
             last_raw = await redis_client.get(LAST_KEY)
             now = int(_time.time())
-            last = int(last_raw.decode()) if last_raw else 0
+            last = int(last_raw) if last_raw else 0
             if (now - last) > WEEK:
                 await redis_client.set(LAST_KEY, str(now))
                 keys = await redis_client.keys(f"history:{BOT_NAME}:*")
                 logger.info(f"Weekly review: starting for {len(keys)} users")
                 for key in keys:
-                    uid_str = key.decode().split(":")[-1] if isinstance(key, bytes) else key.split(":")[-1]
+                    uid_str = key.split(":")[-1]
                     if uid_str.isdigit():
                         await weekly_review(int(uid_str))
                 logger.info("Weekly review: done")
@@ -527,7 +527,7 @@ async def handle_task(request):
 
 async def main():
     global redis_client
-    redis_client = aioredis.from_url(REDIS_URL, decode_responses=False)
+    redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
     asyncio.create_task(weekly_review_loop())
     app_http = web.Application()
     app_http.router.add_post("/task", handle_task)
