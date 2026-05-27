@@ -309,14 +309,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         history = history[-10:]
 
     try:
-        response = await _anthropic_call(client, 
+        response = await _anthropic_call(client,
             model="claude-sonnet-4-6",
             max_tokens=1024,
             system=await build_system(user_id),
-            messages=history
+            messages=history,
+            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
         )
 
-        reply = response.content[0].text
+        reply = "\n".join(b.text for b in response.content if hasattr(b, "text") and b.text).strip()
         history.append({"role": "assistant", "content": reply})
         await redis_save_history(chat_id, history)
 
@@ -447,9 +448,10 @@ async def generate_response(text: str, user_id: int, group_ctx: str = "") -> str
             model="claude-sonnet-4-6",
             max_tokens=512,
             system=await build_system(user_id),
-            messages=history
+            messages=history,
+            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
         )
-        reply = response.content[0].text
+        reply = "\n".join(b.text for b in response.content if hasattr(b, "text") and b.text).strip()
         history.append({"role": "assistant", "content": reply})
         await redis_save_history(user_id, history)
         await log_event(redis_client, BOT_NAME_LOWER, "response_sent",
