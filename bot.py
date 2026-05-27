@@ -1,4 +1,3 @@
-Lines: 536
 import os
 import json
 import random
@@ -475,6 +474,21 @@ async def send_to_group(text: str):
     except Exception as e:
         logger.error(f"send_to_group failed: {e}")
 
+async def handle_reply(request):
+    try:
+        data       = await request.json()
+        chat_id    = data.get("chat_id")
+        text       = data.get("text", "")
+        from_agent = data.get("from_agent", "")
+        if not chat_id or not text:
+            return web.Response(status=400, text="chat_id and text required")
+        prefix = f"[{from_agent}] " if from_agent else ""
+        await ptb.bot.send_message(chat_id=int(chat_id), text=prefix + text)
+        return web.Response(text="ok")
+    except Exception as e:
+        logger.error(f"[ГОСЛИНГ] /reply error: {e}")
+        return web.Response(status=500, text=str(e))
+
 async def handle_task(request):
     """HTTP endpoint для роутинга от Филли.
     Отправляет ответ в группу сам — чтобы Филли не делал двойной fallback.
@@ -502,7 +516,9 @@ async def main():
     redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
     asyncio.create_task(weekly_review_loop())
     app_http = web.Application()
-    app_http.router.add_post("/task", handle_task)
+    app_http.router.add_post("/task",   handle_task)
+    app_http.router.add_get("/health",  lambda r: web.json_response({"status":"ok","bot":"gosling"}))
+    app_http.router.add_post("/reply",  handle_reply)
     runner = web.AppRunner(app_http)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", HTTP_PORT).start()
