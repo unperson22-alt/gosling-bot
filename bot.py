@@ -513,11 +513,28 @@ async def handle_task(request):
         return web.json_response({"status": "error", "error": str(e)}, status=500)
 
 
+
+async def handle_send(request):
+    """POST /send {chat_id, text} — отправить от имени Гослинга."""
+    secret = request.headers.get("X-Secret-Token", "")
+    if HTTP_SECRET and secret != HTTP_SECRET:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        body = await request.json()
+        chat_id = int(body["chat_id"])
+        text    = str(body["text"])
+    except (KeyError, ValueError) as e:
+        return web.json_response({"error": f"bad request: {e}"}, status=400)
+    await _ptb_bot.send_message(chat_id=chat_id, text=text)
+    return web.json_response({"ok": True})
+
+
 async def main():
-    global redis_client
+    global redis_client, _ptb_bot
     redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
     asyncio.create_task(weekly_review_loop())
     app_http = web.Application()
+app_http.router.add_post("/send", handle_send)
     app_http.router.add_post("/task",   handle_task)
     app_http.router.add_get("/health",  lambda r: web.json_response({"status":"ok","bot":"gosling"}))
     app_http.router.add_post("/reply",  handle_reply)
@@ -530,6 +547,7 @@ async def main():
     ptb.add_handler(MessageHandler((filters.TEXT | filters.VOICE | filters.PHOTO) & ~filters.COMMAND, handle_message))
     async with ptb:
         await ptb.start()
+        _ptb_bot = ptb.bot
         global BOT_USERNAME
         me = await ptb.bot.get_me()
         BOT_USERNAME = me.username
