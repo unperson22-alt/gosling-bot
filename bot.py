@@ -534,7 +534,7 @@ async def main():
     redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
     asyncio.create_task(weekly_review_loop())
     app_http = web.Application()
-app_http.router.add_post("/send", handle_send)
+    app_http.router.add_post("/send", handle_send)
     app_http.router.add_post("/task",   handle_task)
     app_http.router.add_get("/health",  lambda r: web.json_response({"status":"ok","bot":"gosling"}))
     app_http.router.add_post("/reply",  handle_reply)
