@@ -10,7 +10,7 @@ from ai_office_shared.shared.logging import log_event
 from ai_office_shared.shared.ollama import OllamaResult as _OllamaResult, try_ollama as _try_ollama
 from ai_office_shared.shared.routing import forward_to_filly, make_reply_handler, is_routed
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, MessageHandler, filters, ContextTypes, MessageReactionHandler)
 from aiohttp import web
 
 # ── Ollama config ────────────────────────────────────────────────────────────
@@ -523,6 +523,47 @@ async def handle_send_scheduled(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+async def handle_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Реакции 👍/👎 → office:quality:{bot} (HASH up/down)."""
+    reaction = update.message_reaction
+    if not reaction:
+        return
+
+    chat_id = reaction.chat.id
+    msg_id  = reaction.message_id
+
+    try:
+        owner_raw = await redis_client.get(f"office:msg:{chat_id}:{msg_id}")
+    except Exception as e:
+        logger.warning(f"reaction owner lookup failed: {e}")
+        return
+    if not owner_raw or owner_raw != BOT_NAME_LOWER:
+        return
+
+    old_emojis = {r.emoji for r in (reaction.old_reaction or []) if getattr(r, "emoji", None)}
+    new_emojis = {r.emoji for r in (reaction.new_reaction or []) if getattr(r, "emoji", None)}
+    added   = new_emojis - old_emojis
+    removed = old_emojis - new_emojis
+
+    delta_up   = sum(1 for e in added if e in REACTION_UP)   - sum(1 for e in removed if e in REACTION_UP)
+    delta_down = sum(1 for e in added if e in REACTION_DOWN) - sum(1 for e in removed if e in REACTION_DOWN)
+
+    if delta_up == 0 and delta_down == 0:
+        return
+
+    try:
+        key = f"office:quality:{BOT_NAME_LOWER}"
+        if delta_up:
+            await redis_client.hincrby(key, "up", delta_up)
+        if delta_down:
+            await redis_client.hincrby(key, "down", delta_down)
+        logger.info(f"REACTION msg={msg_id} added={added} removed={removed} du={delta_up} dd={delta_down}")
+    except Exception as e:
+        logger.warning(f"quality hincrby failed: {e}")
+
+
+
+
 async def handle_task(request):
     """HTTP endpoint для роутинга от Филли.
     Отправляет ответ в группу сам — чтобы Филли не делал двойной fallback.
@@ -578,6 +619,7 @@ async def main():
 
     ptb = Application.builder().token(TELEGRAM_TOKEN).build()
     ptb.add_handler(MessageHandler((filters.TEXT | filters.VOICE | filters.PHOTO) & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageReactionHandler(handle_reaction))
     async with ptb:
         await ptb.start()
         _ptb_bot = ptb.bot
