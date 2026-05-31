@@ -491,6 +491,38 @@ async def handle_reply(request):
         logger.error(f"[ГОСЛИНГ] /reply error: {e}")
         return web.Response(status=500, text=str(e))
 
+async def handle_send_scheduled(request):
+    """
+    POST /send_scheduled — внешний триггер (Railway Cron) шлёт сообщение от бота.
+    Body: {"chat_id": int, "message": str, "user_id": int (optional)}
+    """
+    if not check_secret(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        data    = await request.json()
+        chat_id = data.get("chat_id")
+        message = data.get("message", "").strip()
+        user_id = data.get("user_id", YOUR_TELEGRAM_ID)
+        if not chat_id or not message:
+            return web.json_response({"error": "chat_id and message required"}, status=400)
+        bot = request.app["bot"]
+        # Генерируем через Claude если message — это инструкция а не готовый текст
+        if data.get("generate", False):
+            response = await process(message, user_id)
+            text = response
+        else:
+            text = message
+        sent = await bot.send_message(chat_id=int(chat_id), text=text)
+        if sent:
+            await remember_my_message(sent.chat_id, sent.message_id)
+        await log_event(redis_client, BOT_NAME_LOWER, "scheduled_sent",
+                        chat_id=chat_id, length=len(text))
+        return web.json_response({"status": "ok", "length": len(text)})
+    except Exception as e:
+        logger.error(f"/send_scheduled error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def handle_task(request):
     """HTTP endpoint для роутинга от Филли.
     Отправляет ответ в группу сам — чтобы Филли не делал двойной fallback.
@@ -536,6 +568,7 @@ async def main():
     app_http = web.Application()
     app_http.router.add_post("/send", handle_send)
     app_http.router.add_post("/task",   handle_task)
+    app_http.router.add_post("/send_scheduled", handle_send_scheduled)
     app_http.router.add_get("/health",  lambda r: web.json_response({"status":"ok","bot":"gosling"}))
     app_http.router.add_post("/reply",  handle_reply)
     runner = web.AppRunner(app_http)
