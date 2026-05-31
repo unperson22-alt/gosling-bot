@@ -10,7 +10,7 @@ from ai_office_shared.shared.logging import log_event
 from ai_office_shared.shared.ollama import OllamaResult as _OllamaResult, try_ollama as _try_ollama
 from ai_office_shared.shared.routing import forward_to_filly, make_reply_handler, is_routed
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes, MessageReactionHandler)
+from telegram.ext import Application, MessageHandler, filters, ContextTypes, MessageReactionHandler
 from aiohttp import web
 
 # ── Ollama config ────────────────────────────────────────────────────────────
