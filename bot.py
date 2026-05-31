@@ -619,7 +619,7 @@ async def main():
 
     ptb = Application.builder().token(TELEGRAM_TOKEN).build()
     ptb.add_handler(MessageHandler((filters.TEXT | filters.VOICE | filters.PHOTO) & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageReactionHandler(handle_reaction))
+    ptb.add_handler(MessageReactionHandler(handle_reaction))
     async with ptb:
         await ptb.start()
         _ptb_bot = ptb.bot
