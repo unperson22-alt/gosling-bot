@@ -38,6 +38,42 @@ async def _anthropic_call(client, **kwargs):
             raise
     raise last_err
 
+
+# ── Office agents ─────────────────────────────────────────────────────────────
+
+OFFICE_AGENTS = {
+    "ТИЛЛИ": {"url": "https://tilly-bot-production.up.railway.app",
+               "desc": "веб-поиск, актуальные данные, новости"},
+    "МИЛЛИ": {"url": "https://milly-bot-production.up.railway.app",
+               "desc": "бизнес, монетизация, стратегия"},
+    "СИЛЛИ": {"url": "https://ai-office-shared-production.up.railway.app",
+               "desc": "код, автоматизация, технические задачи"},
+    "ДОКТОР":{"url": "https://dilly-bot-production-4a9b.up.railway.app",
+               "desc": "здоровье, медицинские советы"},
+    "БИЛЛИ": {"url": "https://billy-bot-production.up.railway.app",
+               "desc": "мотивация, жизненные решения"},
+    "КРИСС": {"url": "https://kriss-bot-production.up.railway.app",
+               "desc": "личный ассистент, планирование"},
+}
+
+async def _call_office(agent_name: str, message: str, user_id: int) -> str:
+    info = OFFICE_AGENTS.get(agent_name.upper())
+    if not info: return ""
+    try:
+        async with httpx.AsyncClient(timeout=25) as c:
+            r = await c.post(f"{info['url']}/task",
+                json={"message": message, "user_id": user_id})
+        if r.status_code == 200:
+            return r.json().get("response", "")
+    except Exception as e:
+        logger.warning(f"[office] {agent_name}: {e}")
+    return ""
+
+def _parse_office_tag(text: str):
+    import re as _re
+    m = _re.search(r'\[OFFICE:(\w+):(.+?)\]', text)
+    return (m.group(1).upper(), m.group(2).strip()) if m else (None, None)
+
 logging.basicConfig(level=logging.INFO)
 HTTP_PORT = int(os.getenv("PORT", 8080))
 logger = logging.getLogger(__name__)
@@ -456,6 +492,29 @@ async def generate_response(text: str, user_id: int, group_ctx: str = "") -> str
         await redis_save_history(user_id, history)
         await log_event(redis_client, BOT_NAME_LOWER, "response_sent",
                         user_id=user_id, is_group=bool(group_ctx))
+
+        # ── OFFICE routing ────────────────────────────────────────────────────
+        import re as _re
+        agent_name_off, office_query = _parse_office_tag(reply)
+        clean_reply = _re.sub(r'\[OFFICE:[^\]]+\]', '', reply).strip()
+        if agent_name_off and office_query:
+            office_result = await _call_office(agent_name_off, office_query, user_id)
+            if office_result:
+                history.append({"role": "assistant", "content": clean_reply})
+                synth_msgs = history + [
+                    {"role": "user", "content": f"[Данные от {agent_name_off}]: {office_result}\n\nСинтезируй финальный ответ."}
+                ]
+                r2 = await _anthropic_call(client,
+                    model="claude-sonnet-4-6", max_tokens=512,
+                    system=await build_system(user_id),
+                    messages=synth_msgs)
+                final = "\n".join(b.text for b in r2.content if hasattr(b, "text") and b.text).strip()
+                reply = final if final else clean_reply + f"\n\n📡 {agent_name_off}: {office_result[:300]}"
+            else:
+                reply = clean_reply
+        else:
+            reply = clean_reply
+        # ─────────────────────────────────────────────────────────────────────
         return reply
     except Exception as e:
         logger.error(f"generate_response error: {e}")
