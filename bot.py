@@ -124,7 +124,7 @@ async def log(event: str, msg: str, from_: str = "", to_: str = ""):
     except Exception:
         pass
 
-BOT_REPLY_CHANCE   = 0.30  # боты
+BOT_REPLY_CHANCE   = 0.40  # боты
 HUMAN_REPLY_CHANCE = 0.40  # обычные люди
 LUK_REPLY_CHANCE   = 0.50  # Лук — свой чел
 LUK_USER_ID = 331989769
