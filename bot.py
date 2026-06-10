@@ -9,6 +9,14 @@ import redis.asyncio as aioredis
 from ai_office_shared.shared.logging import log_event
 from ai_office_shared.shared.ollama import OllamaResult as _OllamaResult, try_ollama as _try_ollama
 from ai_office_shared.shared.routing import forward_to_filly, make_reply_handler, is_routed
+from ai_office_shared.shared.web_search import WEB_SEARCH_TOOLS
+from ai_office_shared.shared.office import (
+    OFFICE_AGENTS, call_office as _call_office_shared, parse_office_tag as _parse_office_tag
+)
+
+async def _call_office(agent_name: str, message: str, user_id: int) -> str:
+    return await _call_office_shared(agent_name, message, user_id)
+
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, MessageReactionHandler
 from aiohttp import web
@@ -38,41 +46,6 @@ async def _anthropic_call(client, **kwargs):
             raise
     raise last_err
 
-
-# ── Office agents ─────────────────────────────────────────────────────────────
-
-OFFICE_AGENTS = {
-    "ТИЛЛИ": {"url": "https://tilly-bot-production.up.railway.app",
-               "desc": "веб-поиск, актуальные данные, новости"},
-    "МИЛЛИ": {"url": "https://milly-bot-production.up.railway.app",
-               "desc": "бизнес, монетизация, стратегия"},
-    "СИЛЛИ": {"url": "https://ai-office-shared-production.up.railway.app",
-               "desc": "код, автоматизация, технические задачи"},
-    "ДОКТОР":{"url": "https://dilly-bot-production-4a9b.up.railway.app",
-               "desc": "здоровье, медицинские советы"},
-    "БИЛЛИ": {"url": "https://billy-bot-production.up.railway.app",
-               "desc": "мотивация, жизненные решения"},
-    "КРИСС": {"url": "https://kriss-bot-production.up.railway.app",
-               "desc": "личный ассистент, планирование"},
-}
-
-async def _call_office(agent_name: str, message: str, user_id: int) -> str:
-    info = OFFICE_AGENTS.get(agent_name.upper())
-    if not info: return ""
-    try:
-        async with httpx.AsyncClient(timeout=25) as c:
-            r = await c.post(f"{info['url']}/task",
-                json={"message": message, "user_id": user_id})
-        if r.status_code == 200:
-            return r.json().get("response", "")
-    except Exception as e:
-        logger.warning(f"[office] {agent_name}: {e}")
-    return ""
-
-def _parse_office_tag(text: str):
-    import re as _re
-    m = _re.search(r'\[OFFICE:(\w+):(.+?)\]', text)
-    return (m.group(1).upper(), m.group(2).strip()) if m else (None, None)
 
 logging.basicConfig(level=logging.INFO)
 HTTP_PORT = int(os.getenv("PORT", 8080))
@@ -350,7 +323,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             max_tokens=1024,
             system=await build_system(user_id),
             messages=history,
-            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
+            tools=WEB_SEARCH_TOOLS
         )
 
         reply = "\n".join(b.text for b in response.content if hasattr(b, "text") and b.text).strip()
@@ -485,7 +458,7 @@ async def generate_response(text: str, user_id: int, group_ctx: str = "") -> str
             max_tokens=512,
             system=await build_system(user_id),
             messages=history,
-            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
+            tools=WEB_SEARCH_TOOLS
         )
         reply = "\n".join(b.text for b in response.content if hasattr(b, "text") and b.text).strip()
         history.append({"role": "assistant", "content": reply})
