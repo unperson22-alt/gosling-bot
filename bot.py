@@ -411,10 +411,13 @@ async def weekly_review(user_id: int):
         logger.warning(f"weekly_review failed: {e}")
 
 async def build_system(user_id: int) -> str:
+    from ai_office_shared.shared.office import instructions_suffix
     notes = await redis_get_notes(user_id)
+    result = GOSLING_SYSTEM
     if notes:
-        return GOSLING_SYSTEM + f"\n\nЗаметки о пользователе:\n{notes}"
-    return GOSLING_SYSTEM
+        result += f"\n\nЗаметки о пользователе:\n{notes}"
+    result += await instructions_suffix(redis_client, BOT_NAME_LOWER)
+    return result
 
 async def weekly_review_loop():
     """Раз в неделю обновляет профили всех пользователей."""
