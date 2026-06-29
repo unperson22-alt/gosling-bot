@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 from ai_office_shared.shared.logging import log_event
 from ai_office_shared.shared.ollama import OllamaResult as _OllamaResult, try_ollama as _try_ollama
 from ai_office_shared.shared.routing import forward_to_filly, make_reply_handler, is_routed
+from ai_office_shared.shared.auth import office_auth_middleware
 from ai_office_shared.shared.web_search import WEB_SEARCH_TOOLS
 from ai_office_shared.shared.office import (
     OFFICE_AGENTS, call_office as _call_office_shared, parse_office_tag as _parse_office_tag
@@ -641,7 +642,7 @@ async def main():
     global redis_client, _ptb_bot
     redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
     asyncio.create_task(weekly_review_loop())
-    app_http = web.Application()
+    app_http = web.Application(middlewares=[office_auth_middleware])
     app_http.router.add_post("/send", handle_send)
     app_http.router.add_post("/task",   handle_task)
     app_http.router.add_post("/send_scheduled", handle_send_scheduled)
