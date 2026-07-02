@@ -14,6 +14,7 @@ from ai_office_shared.shared.web_search import WEB_SEARCH_TOOLS
 from ai_office_shared.shared.office import (
     OFFICE_AGENTS, call_office as _call_office_shared, parse_office_tag as _parse_office_tag
 )
+from ai_office_shared.shared.models import MODEL_SONNET, MODEL_HAIKU
 
 async def _call_office(agent_name: str, message: str, user_id: int) -> str:
     return await _call_office_shared(agent_name, message, user_id)
@@ -205,7 +206,7 @@ async def analyze_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, bot_
         _client = _ant.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
         resp = await asyncio.to_thread(
             _client.messages.create,
-            model="claude-haiku-4-5-20251001",
+            model=MODEL_HAIKU,
             max_tokens=300,
             system=system_prompt,
             messages=[{
@@ -320,7 +321,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         response = await _anthropic_call(client,
-            model="claude-sonnet-4-6",
+            model=MODEL_SONNET,
             max_tokens=1024,
             system=await build_system(user_id),
             messages=history,
@@ -361,7 +362,7 @@ async def auto_extract_interests(message: str, user_id: int):
     try:
         existing = await redis_get_notes(user_id)
         r = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=MODEL_HAIKU,
             max_tokens=150,
             system=(
                 "Ты извлекаешь факты о пользователе из его сообщений. "
@@ -392,7 +393,7 @@ async def weekly_review(user_id: int):
             f"{m['role']}: {m['content'][:200]}" for m in history[-30:]
         )
         r = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=MODEL_HAIKU,
             max_tokens=400,
             system=(
                 "Ты обновляешь профиль пользователя на основе переписки и старых заметок. "
@@ -458,7 +459,7 @@ async def generate_response(text: str, user_id: int, group_ctx: str = "") -> str
         history = history[-10:]
     try:
         response = await _anthropic_call(client,
-            model="claude-sonnet-4-6",
+            model=MODEL_SONNET,
             max_tokens=512,
             system=await build_system(user_id),
             messages=history,
@@ -482,7 +483,7 @@ async def generate_response(text: str, user_id: int, group_ctx: str = "") -> str
                     {"role": "user", "content": f"[Данные от {agent_name_off}]: {office_result}\n\nСинтезируй финальный ответ."}
                 ]
                 r2 = await _anthropic_call(client,
-                    model="claude-sonnet-4-6", max_tokens=512,
+                    model=MODEL_SONNET, max_tokens=512,
                     system=await build_system(user_id),
                     messages=synth_msgs)
                 final = "\n".join(b.text for b in r2.content if hasattr(b, "text") and b.text).strip()
