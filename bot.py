@@ -32,7 +32,7 @@ OLLAMA_ENABLED = os.environ.get("OLLAMA_ENABLED", "").lower() in ("1", "true", "
 
 async def _anthropic_call(client, **kwargs):
     """LLM call. Tries Ollama first if enabled, falls back to Anthropic with 529 retry."""
-    ol = await _try_ollama(kwargs.get("messages", []), kwargs.get("system"))
+    ol = _try_ollama(kwargs.get("messages", []), kwargs.get("system"))  # shared try_ollama синхронный — без await
     if ol is not None:
         return ol
     last_err = None
