@@ -226,7 +226,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if update.message and update.message.photo:
-        await analyze_photo(update, context, BOT_NAME, SYSTEM_PROMPT)
+        await analyze_photo(update, context, BOT_NAME, GOSLING_SYSTEM)
         return
     if update.message.voice:
         groq_key = os.environ.get("GROQ_API_KEY", "")
