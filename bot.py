@@ -4,7 +4,7 @@ import random
 import asyncio
 import httpx
 import logging
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, APIError
 import redis.asyncio as aioredis
 from ai_office_shared.shared.logging import log_event
 from ai_office_shared.shared.ollama import OllamaResult as _OllamaResult, try_ollama as _try_ollama
@@ -494,6 +494,10 @@ async def generate_response(text: str, user_id: int, group_ctx: str = "") -> str
             reply = clean_reply
         # ─────────────────────────────────────────────────────────────────────
         return reply
+    except APIError as e:
+        await log_event(redis_client, BOT_NAME_LOWER, "api_error", level="error",
+                        user_id=user_id, error=str(e)[:200])
+        return "..."
     except Exception as e:
         logger.error(f"generate_response error: {e}")
         return "..."
