@@ -7,9 +7,13 @@ import logging
 from anthropic import AsyncAnthropic, APIError
 import redis.asyncio as aioredis
 from ai_office_shared.shared.logging import log_event
+from ai_office_shared.shared.tasks import spawn
 from ai_office_shared.shared.ollama import OllamaResult as _OllamaResult, try_ollama as _try_ollama
 from ai_office_shared.shared.routing import forward_to_filly, make_reply_handler, is_routed
-from ai_office_shared.shared.auth import office_auth_middleware
+from ai_office_shared.shared.auth import check_office_token, office_auth_middleware
+from ai_office_shared.shared.quality import (
+    REACTION_DOWN, REACTION_UP, remember_my_message,
+)
 from ai_office_shared.shared.web_search import WEB_SEARCH_TOOLS
 from ai_office_shared.shared.office import (
     OFFICE_AGENTS, call_office as _call_office_shared, parse_office_tag as _parse_office_tag
@@ -156,6 +160,7 @@ GOSLING_SYSTEM = """Ты -- Гослинг. Не ассистент, не бот
 Не используй Markdown-разметку (##, **, таблицы, ---) — пиши простым текстом, для структуры используй цифры, тире и символ •."""
 
 redis_client: aioredis.Redis = None
+_ptb_bot = None
 
 
 async def redis_get_history(key: int) -> list:
@@ -526,7 +531,7 @@ async def handle_reply(request):
         if not chat_id or not text:
             return web.Response(status=400, text="chat_id and text required")
         prefix = f"[{from_agent}] " if from_agent else ""
-        await ptb.bot.send_message(chat_id=int(chat_id), text=prefix + text)
+        await _ptb_bot.send_message(chat_id=int(chat_id), text=prefix + text)
         return web.Response(text="ok")
     except Exception as e:
         logger.error(f"[ГОСЛИНГ] /reply error: {e}")
@@ -537,7 +542,7 @@ async def handle_send_scheduled(request):
     POST /send_scheduled — внешний триггер (Railway Cron) шлёт сообщение от бота.
     Body: {"chat_id": int, "message": str, "user_id": int (optional)}
     """
-    if not check_secret(request):
+    if not check_office_token(request):
         return web.json_response({"error": "unauthorized"}, status=401)
     try:
         data    = await request.json()
@@ -549,13 +554,13 @@ async def handle_send_scheduled(request):
         bot = request.app["bot"]
         # Генерируем через Claude если message — это инструкция а не готовый текст
         if data.get("generate", False):
-            response = await process(message, user_id)
+            response = await generate_response(message, user_id)
             text = response
         else:
             text = message
         sent = await bot.send_message(chat_id=int(chat_id), text=text)
         if sent:
-            await remember_my_message(sent.chat_id, sent.message_id)
+            await remember_my_message(redis_client, BOT_NAME_LOWER, sent.chat_id, sent.message_id)
         await log_event(redis_client, BOT_NAME_LOWER, "scheduled_sent",
                         chat_id=chat_id, length=len(text))
         return web.json_response({"status": "ok", "length": len(text)})
@@ -630,8 +635,7 @@ async def handle_task(request):
 
 async def handle_send(request):
     """POST /send {chat_id, text} — отправить от имени Гослинга."""
-    secret = request.headers.get("X-Secret-Token", "")
-    if HTTP_SECRET and secret != HTTP_SECRET:
+    if not check_office_token(request):
         return web.json_response({"error": "unauthorized"}, status=401)
     try:
         body = await request.json()
@@ -646,7 +650,7 @@ async def handle_send(request):
 async def main():
     global redis_client, _ptb_bot
     redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
-    asyncio.create_task(weekly_review_loop())
+    spawn(weekly_review_loop())
     app_http = web.Application(middlewares=[office_auth_middleware])
     app_http.router.add_post("/send", handle_send)
     app_http.router.add_post("/task",   handle_task)
