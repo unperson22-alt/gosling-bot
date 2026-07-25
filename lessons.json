@@ -1,0 +1,9 @@
+[
+  {
+    "date": "2026-07-25",
+    "issue": "Gosling had eight undefined names: /reply, /send and /send_scheduled all returned 500, and every reaction on his own messages crashed instead of being counted.",
+    "root_cause": "py_compile accepts undefined names, so eight of them shipped. /reply used  (local to main(); the module global is _ptb_bot). /send_scheduled called an undefined check_secret(), then process() — a function this bot does not have, its generator is generate_response() — and remember_my_message(), which was neither imported nor called with the shared signature. /send referenced an undefined HTTP_SECRET. handle_reaction compared emojis against REACTION_UP/REACTION_DOWN, which were never imported from ai_office_shared.shared.quality.",
+    "solution": "ptb -> _ptb_bot (module global added), check_secret/HTTP_SECRET -> shared.auth.check_office_token (the same mechanism office_auth_middleware already applies), process() -> generate_response(), and REACTION_UP/REACTION_DOWN/remember_my_message imported from shared.quality with remember_my_message called as (redis_client, bot_name, chat_id, msg_id). asyncio.create_task replaced with shared.tasks.spawn.",
+    "preventive_measure": "Run pyflakes, not py_compile, before every push — it finds this entire class in seconds. When a helper moves into ai_office_shared, grep for call sites still using the old local signature; an import that was never added fails only on the code path that uses it, which can be a rarely hit endpoint."
+  }
+]
