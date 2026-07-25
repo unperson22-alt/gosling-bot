@@ -8,15 +8,15 @@ from anthropic import AsyncAnthropic, APIError
 import redis.asyncio as aioredis
 from ai_office_shared.shared.logging import log_event
 from ai_office_shared.shared.tasks import spawn
-from ai_office_shared.shared.ollama import OllamaResult as _OllamaResult, try_ollama as _try_ollama
-from ai_office_shared.shared.routing import forward_to_filly, make_reply_handler, is_routed
+from ai_office_shared.shared.ollama import try_ollama as _try_ollama
 from ai_office_shared.shared.auth import check_office_token, office_auth_middleware
 from ai_office_shared.shared.quality import (
     REACTION_DOWN, REACTION_UP, remember_my_message,
 )
 from ai_office_shared.shared.web_search import WEB_SEARCH_TOOLS
 from ai_office_shared.shared.office import (
-    OFFICE_AGENTS, call_office as _call_office_shared, parse_office_tag as _parse_office_tag
+    call_office as _call_office_shared,
+    parse_office_tag as _parse_office_tag,
 )
 from ai_office_shared.shared.models import MODEL_SONNET, MODEL_HAIKU
 
@@ -223,7 +223,7 @@ async def analyze_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, bot_
             }]
         )
         await msg.reply_text(resp.content[0].text)
-    except Exception as e:
+    except Exception:
         await msg.reply_text("Хм, не смог прочитать это фото. Попробуй другое или опиши текстом.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
