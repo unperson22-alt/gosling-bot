@@ -19,6 +19,9 @@ from ai_office_shared.shared.office import (
     parse_office_tag as _parse_office_tag,
 )
 from ai_office_shared.shared.models import MODEL_SONNET, MODEL_HAIKU
+from ai_office_shared.shared import banter as _banter
+from ai_office_shared.shared import group_history as _ghist
+from ai_office_shared.shared.identity import roster_prompt
 
 async def _call_office(agent_name: str, message: str, user_id: int) -> str:
     return await _call_office_shared(agent_name, message, user_id)
@@ -81,7 +84,6 @@ TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 YOUR_TELEGRAM_ID = int(os.environ["YOUR_TELEGRAM_ID"])
 OFFICE_GROUP_ID  = int(os.environ.get("OFFICE_CHAT_ID", "-5194783850"))
-BILLY_USERNAME   = os.environ.get("BILLY_USERNAME", "billy_vlad_bot")
 PILLY_BOT_URL    = os.environ.get("PILLY_BOT_URL", "")
 BOT_USERNAME     = None  # заполняется при старте
 BOT_NAME         = "Гослинг"
@@ -103,7 +105,9 @@ async def log(event: str, msg: str, from_: str = "", to_: str = ""):
     except Exception:
         pass
 
-BOT_REPLY_CHANCE   = 0.40  # боты
+# BOT_REPLY_CHANCE удалён: Telegram не доставляет боту сообщения других ботов,
+# так что «шанс ответить боту в группе» никогда не разыгрывался. Реакции ботов
+# друг на друга идут через HTTP /task — см. ai_office_shared.shared.banter.
 HUMAN_REPLY_CHANCE = 0.40  # обычные люди
 LUK_REPLY_CHANCE   = 0.50  # Лук — свой чел
 LUK_USER_ID = 331989769
@@ -152,7 +156,7 @@ GOSLING_SYSTEM = """Ты -- Гослинг. Не ассистент, не бот
 — Если тебя спрашивают о чём-то серьёзном — уходишь в абсурд или предлагаешь план Б
 
 Билли — твой лучший друг которого ты раздражаешь, но он всё равно не может без тебя.
-Влад — шеф, к которому ты относишься с уважением, но на своих условиях.
+Влад — шеф, к которому ты относишься с уважением, но на своих условиях. Он же Йодка — это одно и то же лицо, не два разных человека.
 Лук — свой чел, можно расслабиться.
 
 Стиль речи: короткие фразы, неожиданные переходы, много "слушай", "окей но", "подожди подожди". Русский матерный разрешён в меру.
@@ -263,8 +267,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     sender_username = (from_user.username or "").lower()
-    is_billy = sender_username == BILLY_USERNAME.lower()
-    is_other_bot = from_user.is_bot and not is_billy
 
     # Прямое @упоминание через @username — всегда отвечаем
     # "гослинг" в тексте НЕ триггерит здесь — это роутит Филли через HTTP
@@ -281,12 +283,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_direct_mention or is_reply_to_me:
         logger.info(f"Direct mention/reply from @{sender_username} — always responding")
-    elif is_other_bot:
-        if not (random.random() < BOT_REPLY_CHANCE):
-            return
-        logger.info(f"Responding to bot @{sender_username} ({int(BOT_REPLY_CHANCE*100)}% hit)")
-    elif is_billy:
-        logger.info("Responding to Billy -- always")
+    elif from_user.is_bot:
+        # Сюда попасть нельзя: Telegram не доставляет боту сообщения других
+        # ботов. Ветки «отвечать Билли всегда» и «отвечать ботам с шансом 40%»
+        # жили здесь мёртвым кодом и создавали впечатление работающей фичи —
+        # отсюда и жалоба «Гослинг вообще не отвечает Билли». Реальный канал
+        # межботового общения один: HTTP /task (см. shared.banter).
+        return
     elif is_luk:
         if not (random.random() < LUK_REPLY_CHANCE):
             return
@@ -421,6 +424,9 @@ async def build_system(user_id: int) -> str:
     from ai_office_shared.shared.office import instructions_suffix
     notes = await redis_get_notes(user_id)
     result = GOSLING_SYSTEM
+    # Ростер офиса — фактом, а не догадкой по чату. Без него бот знал только
+    # Билли и Влада из своего промта и путал остальных с кем попало.
+    result += "\n\n" + roster_prompt(BOT_NAME)
     if notes:
         result += f"\n\nЗаметки о пользователе:\n{notes}"
     result += await instructions_suffix(redis_client, BOT_NAME_LOWER)
@@ -450,22 +456,28 @@ async def weekly_review_loop():
         await asyncio.sleep(3600)
 
 
-async def generate_response(text: str, user_id: int, group_ctx: str = "") -> str:
-    """Выделенная функция генерации — используется Telegram handler и HTTP /task."""
+async def generate_response(text: str, user_id: int, group_ctx: str = "",
+                            sender: str = "", short: bool = False) -> str:
+    """Выделенная функция генерации — используется Telegram handler и HTTP /task.
+
+    sender — кто написал. Без него по HTTP приходил голый текст, и 07.08 Гослинг
+    принял реплику Билли за сообщение Влада, обратившись к нему «Йодка».
+    """
     await log_event(redis_client, BOT_NAME_LOWER, "message_received",
                     user_id=user_id, is_group=bool(group_ctx))
     history = await redis_get_history(user_id)
+    body = f"[от {sender}] {text}" if sender else text
     if group_ctx:
-        full_text = f"[Контекст группового чата]\n{group_ctx}\n\n[Запрос]\n{text}"
+        full_text = f"[Контекст группового чата]\n{group_ctx}\n\n[Запрос]\n{body}"
     else:
-        full_text = text
+        full_text = body
     history.append({"role": "user", "content": full_text})
     if len(history) > 10:
         history = history[-10:]
     try:
         response = await _anthropic_call(client,
             model=MODEL_SONNET,
-            max_tokens=512,
+            max_tokens=120 if short else 512,
             system=await build_system(user_id),
             messages=history,
             tools=WEB_SEARCH_TOOLS
@@ -519,6 +531,9 @@ async def send_to_group(text: str):
                 json={"chat_id": OFFICE_GROUP_ID, "text": text},
                 timeout=10
             )
+        # В общую ленту — иначе коллеги не увидят, что мы сказали: Telegram
+        # сообщения ботов другим ботам не доставляет, лента единственный канал.
+        await _ghist.push(redis_client, BOT_NAME, text)
     except Exception as e:
         logger.error(f"send_to_group failed: {e}")
 
@@ -619,10 +634,13 @@ async def handle_task(request):
         message   = data.get("message", "")
         user_id   = int(data.get("user_id", YOUR_TELEGRAM_ID))
         group_ctx = data.get("group_ctx", "")
+        sender    = _banter.sender_of(data)
+        is_banter = _banter.is_banter(data)
         await log_event(redis_client, BOT_NAME_LOWER, "task_received",
                         user_id=user_id, via="http")
-        await log("MSG_IN", message, from_="HTTP", to_=BOT_NAME)
-        reply = await generate_response(message, user_id, group_ctx=group_ctx)
+        await log("MSG_IN", message, from_=sender or "HTTP", to_=BOT_NAME)
+        reply = await generate_response(message, user_id, group_ctx=group_ctx,
+                                        sender=sender, short=is_banter)
         # Отправляем в группу сами — Филли видит 200 и молчит
         await send_to_group(reply)
         await log("MSG_OUT", f"{BOT_NAME}: {reply}", from_=BOT_NAME, to_="group")
