@@ -131,7 +131,10 @@ async def log(event: str, msg: str, from_: str = "", to_: str = ""):
             payload = {"agent": BOT_NAME, "type": event, "message": msg}
             if from_: payload["from"] = from_
             if to_:   payload["to"]   = to_
-            await c.post(f"{LOG_BOT_URL}/log", json=payload, timeout=5)
+            _lr = await c.post(f"{LOG_BOT_URL}/log", json=payload, timeout=5)
+            if _lr.status_code not in (200, 202):
+                logger.warning("[log] logger-bot ответил %s — событие %s потеряно",
+                               _lr.status_code, event)
     except Exception:
         pass
 
@@ -357,6 +360,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(history) > 10:
         history = history[-10:]
 
+    # Лог входящего. Раньше эта ветка НЕ логировалась вообще: `await log(...)`
+    # в файле вызывался только из handle_task, то есть из HTTP-пути. Гослинг
+    # отвечает людям в группе своим телеграм-хендлером (HUMAN_REPLY_CHANCE), и
+    # такие ответы были невидимы — 16.08 в 00:02 он ответил в чат, а в Log-боте
+    # его нет вовсе. Бот, говорящий в офисе мимо логов, ломает любой разбор:
+    # по логам выходит, что реплики не было.
+    await log("MSG_IN", clean_text, from_=username, to_=BOT_NAME)
+
     try:
         response = await _anthropic_call(client,
             model=MODEL_SONNET,
@@ -371,6 +382,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await redis_save_history(chat_id, history)
 
         await update.message.reply_text(reply)
+        await log("MSG_OUT", f"{BOT_NAME}: {reply}", from_=BOT_NAME,
+                  to_=("group" if chat_type in ("group", "supergroup") else username))
         logger.info(f"Gosling replied: {reply[:60]}")
 
     except Exception as e:
