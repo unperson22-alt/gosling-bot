@@ -60,6 +60,36 @@ logging.basicConfig(level=logging.INFO)
 HTTP_PORT = int(os.getenv("PORT", 8080))
 logger = logging.getLogger(__name__)
 
+def _answer_text(content_blocks, sep: str = "\n") -> str:
+    """
+    Текст ответа модели: только то, что сказано ПОСЛЕ последнего инструмента.
+
+    При server-side web_search ответ состоит из нескольких блоков: «сейчас
+    поищу актуальные данные» → сам поиск → настоящий ответ. Склейка ВСЕХ
+    текстовых блоков давала заикание, которое читается как сбой бота:
+    «Хороший вопрос... Давай по-честному. Окей, данные есть. Погнали — ...»
+    (случай Крисса, 15.08). Фраза «сейчас поищу» адресована модели, не читателю.
+
+    Без инструментов поведение прежнее — обычная склейка тем же разделителем.
+    Если после инструмента модель ничего не сказала, отдаём что есть: пустой
+    ответ пользователь читает как «бот сломался».
+    """
+    blocks = list(content_blocks or [])
+    last_tool = -1
+    for i, b in enumerate(blocks):
+        t = str(getattr(b, "type", "") or "")
+        if t.endswith("tool_use") or t.endswith("tool_result"):
+            last_tool = i
+
+    def _t(seq):
+        return [b.text for b in seq if getattr(b, "text", None)]
+
+    tail = _t(blocks[last_tool + 1:]) if last_tool >= 0 else _t(blocks)
+    if not tail:
+        tail = _t(blocks)
+    return sep.join(tail).strip()
+
+
 async def transcribe_voice(file_path: str) -> str | None:
     groq_key = os.environ.get("GROQ_API_KEY", "")
     if not groq_key:
@@ -336,7 +366,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tools=WEB_SEARCH_TOOLS
         )
 
-        reply = "\n".join(b.text for b in response.content if hasattr(b, "text") and b.text).strip()
+        reply = _answer_text(response.content)
         history.append({"role": "assistant", "content": reply})
         await redis_save_history(chat_id, history)
 
@@ -482,7 +512,7 @@ async def generate_response(text: str, user_id: int, group_ctx: str = "",
             messages=history,
             tools=WEB_SEARCH_TOOLS
         )
-        reply = "\n".join(b.text for b in response.content if hasattr(b, "text") and b.text).strip()
+        reply = _answer_text(response.content)
         history.append({"role": "assistant", "content": reply})
         await redis_save_history(user_id, history)
         await log_event(redis_client, BOT_NAME_LOWER, "response_sent",
@@ -503,7 +533,7 @@ async def generate_response(text: str, user_id: int, group_ctx: str = "",
                     model=MODEL_SONNET, max_tokens=512,
                     system=await build_system(user_id),
                     messages=synth_msgs)
-                final = "\n".join(b.text for b in r2.content if hasattr(b, "text") and b.text).strip()
+                final = _answer_text(r2.content)
                 reply = final if final else clean_reply + f"\n\n📡 {agent_name_off}: {office_result[:300]}"
             else:
                 reply = clean_reply
