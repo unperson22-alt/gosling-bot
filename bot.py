@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 import random
 import asyncio
 import httpx
@@ -200,6 +201,54 @@ redis_client: aioredis.Redis = None
 _ptb_bot = None
 
 
+# ── Один ответ на одно сообщение ─────────────────────────────────────────────
+# У Гослинга ДВА независимых входа в группу, и друг о друге они не знали:
+#   1. свой телеграм-хендлер (HUMAN_REPLY_CHANCE = 0.40) — Гослинг единственный
+#      в офисе, кто берёт слово сам; Билли на этом месте делает return;
+#   2. HTTP /task от Филли, когда роутер выбрал Гослинга.
+# 16.08 08:41:57 «С добрым утром головы картонные!» пришло обоими путями, и
+# Гослинг ответил ДВАЖДЫ: в 08:42:01 короткой репликой и в 08:42:06 монологом
+# на пол-экрана. Порог «отвечать ли» был у каждого пути свой, потолка «не
+# ответил ли я уже» не было ни у одного.
+ANSWER_LOCK_TTL = 180   # с — заведомо больше самого долгого ответа
+
+
+def _answer_key(text: str) -> str:
+    """
+    Замок по ТЕКСТУ, а не по message_id: у HTTP-пути message_id нет вовсе,
+    Филли передаёт только текст. Нормализуем пробелы и регистр — телеграм-путь
+    видит оригинал, а Филли может прислать его же с другой раскладкой пробелов.
+    """
+    norm = " ".join((text or "").split()).lower()[:300]
+    return "office:answered:" + BOT_NAME_LOWER + ":" + \
+           hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
+
+
+async def claim_answer(text: str) -> bool:
+    """
+    Занять право ответить на это сообщение. False — по нему уже отвечает
+    другой путь, надо промолчать.
+
+    SET NX EX одной операцией: раздельные «проверить» и «занять» оставили бы
+    щель ровно того размера, в которую эти два пути и попадают — между
+    телеграм-апдейтом и HTTP-вызовом Филли прошло 1.5 секунды.
+
+    Кто занял первым — тот и отвечает. Специально выбирать, чей ответ «лучше»,
+    не пытаемся: уместен любой из двух, неуместны оба сразу.
+
+    Fail-open: Redis недоступен — лучше два ответа, чем ни одного.
+    """
+    if redis_client is None or not text:
+        return True
+    try:
+        got = await redis_client.set(_answer_key(text), "1", nx=True,
+                                     ex=ANSWER_LOCK_TTL)
+        return bool(got)
+    except Exception as e:
+        logger.warning(f"[dedup] замок недоступен, отвечаю без него: {e}")
+        return True
+
+
 async def redis_get_history(key: int) -> list:
     try:
         raw = await redis_client.get(f"history:{BOT_NAME}:{key}")
@@ -331,6 +380,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not (random.random() < HUMAN_REPLY_CHANCE):
             return
         logger.info(f"Responding to human @{sender_username} ({int(HUMAN_REPLY_CHANCE*100)}% hit)")
+
+    # Замок занимаем ПОСЛЕ броска шанса: несработавший бросок не должен
+    # затыкать HTTP-путь, ради которого Филли и звал. И только в группе — в
+    # личке второго пути нет, а замок бы съедал повторы вроде «ещё раз».
+    if chat_type in ("group", "supergroup") and not await claim_answer(text):
+        logger.info("[dedup] на это сообщение уже отвечает HTTP-путь — молчу")
+        await log_event(redis_client, BOT_NAME_LOWER, "answer_deduped",
+                        via="telegram")
+        return
 
     clean_text = text
     if context.bot.username:
@@ -682,6 +740,20 @@ async def handle_task(request):
         await log_event(redis_client, BOT_NAME_LOWER, "task_received",
                         user_id=user_id, via="http")
         await log("MSG_IN", message, from_=sender or "HTTP", to_=BOT_NAME)
+
+        # Болталку не дедупим: её пинг — отдельная реплика с собственным
+        # текстом, а не второй заход на то же сообщение. Замок бы её глушил
+        # ровно там, где два высказывания подряд и задуманы.
+        if not is_banter and not await claim_answer(message):
+            logger.info("[dedup] на это сообщение уже ответил телеграм-путь")
+            await log_event(redis_client, BOT_NAME_LOWER, "answer_deduped",
+                            via="http")
+            # 200, а не ошибка: Филли доставил, отвечать было не нужно.
+            # Пустой response — сигнал болталке не заводить вторую волну от
+            # реплики, которой не было.
+            return web.json_response({"status": "ok", "response": "",
+                                      "skipped": "duplicate"})
+
         reply = await generate_response(message, user_id, group_ctx=group_ctx,
                                         sender=sender, short=is_banter)
         # Отправляем в группу сами — Филли видит 200 и молчит
