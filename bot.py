@@ -1,6 +1,5 @@
 import os
 import json
-import hashlib
 import random
 import asyncio
 import httpx
@@ -21,6 +20,7 @@ from ai_office_shared.shared.office import (
 )
 from ai_office_shared.shared.models import MODEL_SONNET, MODEL_HAIKU
 from ai_office_shared.shared import banter as _banter
+from ai_office_shared.shared import dedup as _dedup
 from ai_office_shared.shared import group_history as _ghist
 from ai_office_shared.shared.identity import roster_prompt
 
@@ -203,50 +203,21 @@ _ptb_bot = None
 
 # ── Один ответ на одно сообщение ─────────────────────────────────────────────
 # У Гослинга ДВА независимых входа в группу, и друг о друге они не знали:
-#   1. свой телеграм-хендлер (HUMAN_REPLY_CHANCE = 0.40) — Гослинг единственный
-#      в офисе, кто берёт слово сам; Билли на этом месте делает return;
+#   1. свой телеграм-хендлер (HUMAN_REPLY_CHANCE = 0.40) — Гослинг берёт слово
+#      сам; Билли на этом месте делает return;
 #   2. HTTP /task от Филли, когда роутер выбрал Гослинга.
 # 16.08 08:41:57 «С добрым утром головы картонные!» пришло обоими путями, и
 # Гослинг ответил ДВАЖДЫ: в 08:42:01 короткой репликой и в 08:42:06 монологом
-# на пол-экрана. Порог «отвечать ли» был у каждого пути свой, потолка «не
-# ответил ли я уже» не было ни у одного.
-ANSWER_LOCK_TTL = 180   # с — заведомо больше самого долгого ответа
-
-
-def _answer_key(text: str) -> str:
-    """
-    Замок по ТЕКСТУ, а не по message_id: у HTTP-пути message_id нет вовсе,
-    Филли передаёт только текст. Нормализуем пробелы и регистр — телеграм-путь
-    видит оригинал, а Филли может прислать его же с другой раскладкой пробелов.
-    """
-    norm = " ".join((text or "").split()).lower()[:300]
-    return "office:answered:" + BOT_NAME_LOWER + ":" + \
-           hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
+# на пол-экрана.
+#
+# Замок переехал в ai_office_shared.shared.dedup — ровно тот же SET NX EX и тот
+# же формат ключа (проверено тестом на совпадение), просто теперь он один на
+# офис, а не по копии у каждого бота с двумя входами.
 
 
 async def claim_answer(text: str) -> bool:
-    """
-    Занять право ответить на это сообщение. False — по нему уже отвечает
-    другой путь, надо промолчать.
-
-    SET NX EX одной операцией: раздельные «проверить» и «занять» оставили бы
-    щель ровно того размера, в которую эти два пути и попадают — между
-    телеграм-апдейтом и HTTP-вызовом Филли прошло 1.5 секунды.
-
-    Кто занял первым — тот и отвечает. Специально выбирать, чей ответ «лучше»,
-    не пытаемся: уместен любой из двух, неуместны оба сразу.
-
-    Fail-open: Redis недоступен — лучше два ответа, чем ни одного.
-    """
-    if redis_client is None or not text:
-        return True
-    try:
-        got = await redis_client.set(_answer_key(text), "1", nx=True,
-                                     ex=ANSWER_LOCK_TTL)
-        return bool(got)
-    except Exception as e:
-        logger.warning(f"[dedup] замок недоступен, отвечаю без него: {e}")
-        return True
+    """Занять право ответить. False — по этому сообщению уже отвечает другой путь."""
+    return await _dedup.claim_answer(redis_client, BOT_NAME_LOWER, text)
 
 
 async def redis_get_history(key: int) -> list:
