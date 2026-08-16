@@ -8,6 +8,10 @@
 У каждого пути был свой порог «отвечать ли» и ни у одного — потолок «не ответил
 ли я уже».
 
+Сам замок живёт в ai_office_shared.shared.dedup, и формат ключа с нормализацией
+текста закреплены там же. Здесь проверяется только то, что он действительно
+подключён к ОБОИМ входам Гослинга и что болталку он не глушит.
+
 Запуск:
     cd gosling-bot && python3 -m unittest discover -s tests -v
 """
@@ -66,26 +70,6 @@ class _Patched:
     def __exit__(self, *a):
         bot.redis_client = self._orig
         return False
-
-
-class TestAnswerKey(unittest.TestCase):
-    """Ключ по тексту: у HTTP-пути message_id нет вовсе."""
-
-    def test_same_text_same_key(self):
-        self.assertEqual(bot._answer_key("С добрым утром"),
-                         bot._answer_key("С добрым утром"))
-
-    def test_whitespace_and_case_do_not_matter(self):
-        # Телеграм-путь видит оригинал, Филли пересобирает — расхождение в
-        # пробелах не должно расщеплять замок надвое.
-        self.assertEqual(bot._answer_key("С добрым  утром\nголовы"),
-                         bot._answer_key("с добрым утром головы"))
-
-    def test_different_texts_differ(self):
-        self.assertNotEqual(bot._answer_key("привет"), bot._answer_key("пока"))
-
-    def test_key_is_namespaced_to_this_bot(self):
-        self.assertTrue(bot._answer_key("x").startswith("office:answered:гослинг:"))
 
 
 class TestClaimAnswer(unittest.TestCase):
