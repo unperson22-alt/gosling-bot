@@ -6,6 +6,7 @@ import httpx
 import logging
 from anthropic import AsyncAnthropic, APIError
 import redis.asyncio as aioredis
+from ai_office_shared.shared.build_info import build_info
 from ai_office_shared.shared.logging import log_event
 from ai_office_shared.shared.tasks import spawn
 from ai_office_shared.shared.ollama import try_ollama as _try_ollama
@@ -785,6 +786,14 @@ async def main():
     app_http.router.add_post("/task",   handle_task)
     app_http.router.add_post("/send_scheduled", handle_send_scheduled)
     app_http.router.add_get("/health",  lambda r: web.json_response({"status":"ok","bot":"gosling"}))
+    # «Смёржено ≠ запущено»: между main и тем, что видит Влад, стоит деплой,
+    # а /health отвечает одинаково до и после. 12.09.2026 группа-фикс был
+    # смёржен и пин поднят, но подтвердить сборку удалось ровно у Крисс —
+    # единственной из семи с этим путём; про остальных шесть оставалось
+    # верить исполнителю (инвариант №5, урок #129).
+    # Путь открыт намеренно: проверка, которой нужен секрет офиса, не
+    # независима.
+    app_http.router.add_get("/version", lambda r: web.json_response(build_info("гослинг")))
     app_http.router.add_post("/reply",  handle_reply)
     runner = web.AppRunner(app_http)
     await runner.setup()
