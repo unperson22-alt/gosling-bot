@@ -21,7 +21,7 @@ from ai_office_shared.shared.office import (
 from ai_office_shared.shared.models import MODEL_SONNET, MODEL_HAIKU
 from ai_office_shared.shared import banter as _banter
 from ai_office_shared.shared import dedup as _dedup
-from ai_office_shared.shared import group_history as _ghist
+from ai_office_shared.shared import group_post as _gpost
 from ai_office_shared.shared.identity import roster_prompt
 
 async def _call_office(agent_name: str, message: str, user_id: int) -> str:
@@ -114,7 +114,20 @@ async def transcribe_voice(file_path: str) -> str | None:
 TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 YOUR_TELEGRAM_ID = int(os.environ["YOUR_TELEGRAM_ID"])
-OFFICE_GROUP_ID  = int(os.environ.get("OFFICE_CHAT_ID", "-5194783850"))
+# Почему литерал вообще тут есть и почему он ОСТАЁТСЯ. 10.09.2026 из трёх
+# ботов, отчитавшихся в Log-бот за реплику в группу, дошла одна — Гослинга,
+# ровно потому что этот fallback прикрыл то, чего не дал env. Убрать его на
+# «наверное, OFFICE_CHAT_ID задан» значило бы сломать единственный
+# работающий путь на догадке: прочитать переменные Railway из сессии Клода
+# нечем (CLAUDE — СТАРТ, note про RAILWAY_TOKEN), а на прямой запрос Силли
+# ответила выдуманным скриптом с placeholder-токеном — то есть фантомом,
+# а не фактом (инвариант №4).
+# Но тихим он быть перестаёт: подстановка дефолта уезжает в office:logs при
+# старте. Молчаливый НЕВЕРНЫЙ дефолт — тот же класс дефекта, что молчаливо
+# отсутствующий, и отличается только тем, что отложен.
+OFFICE_CHAT_ID_DEFAULT = "-5194783850"
+_OFFICE_CHAT_ENV = os.environ.get("OFFICE_CHAT_ID", "").strip()
+OFFICE_GROUP_ID  = _OFFICE_CHAT_ENV or OFFICE_CHAT_ID_DEFAULT
 PILLY_BOT_URL    = os.environ.get("PILLY_BOT_URL", "")
 BOT_USERNAME     = None  # заполняется при старте
 BOT_NAME         = "Гослинг"
@@ -592,22 +605,19 @@ async def generate_response(text: str, user_id: int, group_ctx: str = "",
         return "..."
 
 
-async def send_to_group(text: str):
-    """Отправляет сообщение в офисную группу."""
-    if not OFFICE_GROUP_ID:
-        return
-    try:
-        async with httpx.AsyncClient() as c:
-            await c.post(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                json={"chat_id": OFFICE_GROUP_ID, "text": text},
-                timeout=10
-            )
-        # В общую ленту — иначе коллеги не увидят, что мы сказали: Telegram
-        # сообщения ботов другим ботам не доставляет, лента единственный канал.
-        await _ghist.push(redis_client, BOT_NAME, text)
-    except Exception as e:
-        logger.error(f"send_to_group failed: {e}")
+async def send_to_group(text: str) -> _gpost.PostResult:
+    """
+    Отправить в офис-группу и вернуть УЛИКУ доставки, а не догадку о ней.
+
+    Прежняя версия не читала ответ Telegram ВООБЩЕ — `await c.post(...)` и
+    сразу в ленту, — поэтому «chat not found», «bot was kicked» и 429 flood
+    control выглядели снаружи ровно как успех. Обоснование и разбор
+    инцидента 10.09.2026 — в ai_office_shared/shared/group_post.py.
+    """
+    return await _gpost.post_to_group(
+        token=TELEGRAM_TOKEN, chat_id=OFFICE_GROUP_ID, text=text,
+        sender_name=BOT_NAME, redis_client=redis_client, bot=BOT_NAME_LOWER,
+    )
 
 async def handle_reply(request):
     try:
@@ -728,8 +738,11 @@ async def handle_task(request):
         reply = await generate_response(message, user_id, group_ctx=group_ctx,
                                         sender=sender, short=is_banter)
         # Отправляем в группу сами — Филли видит 200 и молчит
-        await send_to_group(reply)
-        await log("MSG_OUT", f"{BOT_NAME}: {reply}", from_=BOT_NAME, to_="group")
+        res = await send_to_group(reply)
+        # MSG_OUT только по факту доставки: отчёт о неисполненном отправляет
+        # следующий разбор искать баг там, где всё работает (инвариант №4).
+        await _gpost.log_delivery(log, res, text=f"{BOT_NAME}: {reply}",
+                                  agent=BOT_NAME)
         return web.json_response({"status": "ok", "response": reply})
     except Exception as e:
         logger.error(f"handle_task error: {e}")
@@ -754,6 +767,18 @@ async def handle_send(request):
 async def main():
     global redis_client, _ptb_bot
     redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+
+    # Дефолт chat_id — не тихий. Если сервис работает на литерале, это видно
+    # в office:logs с первой минуты, а не выясняется через месяц по «почему
+    # Гослинг пишет не туда».
+    if not _OFFICE_CHAT_ENV:
+        logger.warning("OFFICE_CHAT_ID не задан — работаю на литерале %s",
+                       OFFICE_CHAT_ID_DEFAULT)
+        await log_event(redis_client, BOT_NAME_LOWER,
+                        "office_chat_id_fallback", level="warn",
+                        chat_id=OFFICE_CHAT_ID_DEFAULT,
+                        detail="OFFICE_CHAT_ID отсутствует в env сервиса")
+
     spawn(weekly_review_loop())
     app_http = web.Application(middlewares=[office_auth_middleware])
     app_http.router.add_post("/send", handle_send)
