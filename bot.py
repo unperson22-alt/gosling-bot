@@ -115,20 +115,24 @@ async def transcribe_voice(file_path: str) -> str | None:
 TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 YOUR_TELEGRAM_ID = int(os.environ["YOUR_TELEGRAM_ID"])
-# Почему литерал вообще тут есть и почему он ОСТАЁТСЯ. 10.09.2026 из трёх
-# ботов, отчитавшихся в Log-бот за реплику в группу, дошла одна — Гослинга,
-# ровно потому что этот fallback прикрыл то, чего не дал env. Убрать его на
-# «наверное, OFFICE_CHAT_ID задан» значило бы сломать единственный
-# работающий путь на догадке: прочитать переменные Railway из сессии Клода
-# нечем (CLAUDE — СТАРТ, note про RAILWAY_TOKEN), а на прямой запрос Силли
-# ответила выдуманным скриптом с placeholder-токеном — то есть фантомом,
-# а не фактом (инвариант №4).
-# Но тихим он быть перестаёт: подстановка дефолта уезжает в office:logs при
-# старте. Молчаливый НЕВЕРНЫЙ дефолт — тот же класс дефекта, что молчаливо
-# отсутствующий, и отличается только тем, что отложен.
-OFFICE_CHAT_ID_DEFAULT = "-5194783850"
-_OFFICE_CHAT_ENV = os.environ.get("OFFICE_CHAT_ID", "").strip()
-OFFICE_GROUP_ID  = _OFFICE_CHAT_ENV or OFFICE_CHAT_ID_DEFAULT
+# Литерала здесь больше НЕТ, и это разворот вчерашнего решения по новым фактам.
+#
+# 12.09 он остался намеренно: это была единственная причина, по которой реплика
+# Гослинга доходила, а убрать его на предположение «наверное, OFFICE_CHAT_ID
+# задан» значило сломать единственный работающий путь на догадке. Оговорка была
+# записана прямо: снимается по измерению, а не по предположению.
+#
+# 13.09 измерение пришло. Группу повысили до супергруппы, и -5194783850 —
+# МЁРТВЫЙ id: Telegram отвечает на него 400 «group chat was upgraded to a
+# supergroup chat» (урок #133). Живое значение офис теперь знает — его назвал
+# сам Telegram в parameters.migrate_to_chat_id.
+#
+# Значит дефолта тут быть не должно вовсе, и подставлять новый id вместо
+# старого тоже нельзя: это опять константа, которую дальняя сторона может
+# отменить, и следующий upgrade вернёт ровно этот же инцидент. Без дефолта
+# незаданный env даёт честный no_chat_id — отказ с причиной, — а не молчаливую
+# отправку в никуда, которая полгода выглядит как успех.
+OFFICE_GROUP_ID  = os.environ.get("OFFICE_CHAT_ID", "").strip()
 PILLY_BOT_URL    = os.environ.get("PILLY_BOT_URL", "")
 BOT_USERNAME     = None  # заполняется при старте
 BOT_NAME         = "Гослинг"
@@ -769,15 +773,12 @@ async def main():
     global redis_client, _ptb_bot
     redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
 
-    # Дефолт chat_id — не тихий. Если сервис работает на литерале, это видно
-    # в office:logs с первой минуты, а не выясняется через месяц по «почему
-    # Гослинг пишет не туда».
-    if not _OFFICE_CHAT_ENV:
-        logger.warning("OFFICE_CHAT_ID не задан — работаю на литерале %s",
-                       OFFICE_CHAT_ID_DEFAULT)
+    # Незаданный chat_id виден с первой минуты, а не выясняется через месяц по
+    # «почему Гослинг молчит». Сам постинг при этом честно вернёт no_chat_id.
+    if not OFFICE_GROUP_ID:
+        logger.warning("OFFICE_CHAT_ID не задан — в группу писать некуда")
         await log_event(redis_client, BOT_NAME_LOWER,
-                        "office_chat_id_fallback", level="warn",
-                        chat_id=OFFICE_CHAT_ID_DEFAULT,
+                        "office_chat_id_missing", level="warn",
                         detail="OFFICE_CHAT_ID отсутствует в env сервиса")
 
     spawn(weekly_review_loop())
