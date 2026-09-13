@@ -610,18 +610,20 @@ async def generate_response(text: str, user_id: int, group_ctx: str = "",
         return "..."
 
 
-async def send_to_group(text: str) -> _gpost.PostResult:
+async def send_to_group(text: str, thread_id: str = "") -> _gpost.PostResult:
     """
     Отправить в офис-группу и вернуть УЛИКУ доставки, а не догадку о ней.
 
-    Прежняя версия не читала ответ Telegram ВООБЩЕ — `await c.post(...)` и
-    сразу в ленту, — поэтому «chat not found», «bot was kicked» и 429 flood
-    control выглядели снаружи ровно как успех. Обоснование и разбор
-    инцидента 10.09.2026 — в ai_office_shared/shared/group_post.py.
+    Прежняя версия не читала ответ Telegram ВООБЩЕ, поэтому «chat not found»,
+    «bot was kicked» и 429 выглядели как успех. Разбор — в
+    ai_office_shared/shared/group_post.py.
+
+    thread_id — нить всплеска болталки, см. shared/banter.py.
     """
     return await _gpost.post_to_group(
         token=TELEGRAM_TOKEN, chat_id=OFFICE_GROUP_ID, text=text,
         sender_name=BOT_NAME, redis_client=redis_client, bot=BOT_NAME_LOWER,
+        thread_id=thread_id,
     )
 
 async def handle_reply(request):
@@ -723,6 +725,10 @@ async def handle_task(request):
         group_ctx = data.get("group_ctx", "")
         sender    = _banter.sender_of(data)
         is_banter = _banter.is_banter(data)
+        # Нить всплеска: уедет в ленту вместе с репликой, чтобы следующая
+        # волна собрала транскрипт по ОДНОМУ разговору, а не окном по всей
+        # истории офиса. Пусто — вызов не из болталки.
+        _thread = _banter.thread_of(data)
         await log_event(redis_client, BOT_NAME_LOWER, "task_received",
                         user_id=user_id, via="http")
         await log("MSG_IN", message, from_=sender or "HTTP", to_=BOT_NAME)
@@ -743,7 +749,7 @@ async def handle_task(request):
         reply = await generate_response(message, user_id, group_ctx=group_ctx,
                                         sender=sender, short=is_banter)
         # Отправляем в группу сами — Филли видит 200 и молчит
-        res = await send_to_group(reply)
+        res = await send_to_group(reply, thread_id=_thread)
         # MSG_OUT только по факту доставки: отчёт о неисполненном отправляет
         # следующий разбор искать баг там, где всё работает (инвариант №4).
         await _gpost.log_delivery(log, res, text=f"{BOT_NAME}: {reply}",
