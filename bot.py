@@ -749,11 +749,23 @@ async def handle_task(request):
         reply = await generate_response(message, user_id, group_ctx=group_ctx,
                                         sender=sender, short=is_banter)
         # Отправляем в группу сами — Филли видит 200 и молчит
-        res = await send_to_group(reply, thread_id=_thread)
+        # Постили БЕЗУСЛОВНО — и на пути «бот→Филли→бот», где ответ уходит
+        # в личку через /reply, всё равно вываливали его в общую группу и
+        # писали ленту вторым писателем (14.09.2026). Теперь одно правило
+        # на всех: shared/banter.should_post_to_group.
+        res = None
+        if _banter.should_post_to_group(data):
+            res = await send_to_group(reply, thread_id=_thread)
         # MSG_OUT только по факту доставки: отчёт о неисполненном отправляет
         # следующий разбор искать баг там, где всё работает (инвариант №4).
-        await _gpost.log_delivery(log, res, text=f"{BOT_NAME}: {reply}",
-                                  agent=BOT_NAME)
+        if res is None:
+            # В группу не постили: правило закрыто, ответ уезжает
+            # вызывающему по HTTP. Этот MSG_OUT про ответ, и он правдив.
+            await log("MSG_OUT", f"{BOT_NAME}: {reply}",
+                      from_=BOT_NAME, to_=sender)
+        else:
+            await _gpost.log_delivery(log, res, text=f"{BOT_NAME}: {reply}",
+                                      agent=BOT_NAME)
         return web.json_response({"status": "ok", "response": reply})
     except Exception as e:
         logger.error(f"handle_task error: {e}")

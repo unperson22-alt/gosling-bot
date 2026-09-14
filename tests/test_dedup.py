@@ -113,6 +113,7 @@ class TestHandleTaskDedup(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.generated = []
         self.sent = []
+        self.threads = []
         self._orig = (bot.generate_response, bot.send_to_group,
                       bot.log_event, bot.redis_client)
 
@@ -120,8 +121,11 @@ class TestHandleTaskDedup(unittest.IsolatedAsyncioTestCase):
             self.generated.append(message)
             return "ответ Гослинга"
 
-        async def fake_send(text):
+        async def fake_send(text, thread_id=""):
+            # thread_id — нить всплеска (14.09.2026): реплика уезжает в ленту
+            # вместе с ней, чтобы транскрипт собирался по одному разговору.
             self.sent.append(text)
+            self.threads.append(thread_id)
 
         async def fake_log_event(*a, **k):
             pass
@@ -136,9 +140,24 @@ class TestHandleTaskDedup(unittest.IsolatedAsyncioTestCase):
          bot.log_event, bot.redis_client) = self._orig
 
     async def test_first_http_call_answers(self):
-        r = await bot.handle_task(_FakeRequest({"message": "Чё за идеи?"}))
+        # notify=True — Филли ставит его явно, когда ждёт реплику В ГРУППЕ.
+        # До 14.09.2026 Гослинг постил безусловно, и на пути «бот→Филли→бот»,
+        # где ответ уходит в личку, вываливал его ещё и в общий чат.
+        r = await bot.handle_task(_FakeRequest(
+            {"message": "Чё за идеи?", "notify": True}))
         self.assertEqual(self.generated, ["Чё за идеи?"])
         self.assertEqual(self.sent, ["ответ Гослинга"])
+        self.assertEqual(r.status, 200)
+
+    async def test_without_notify_the_answer_does_not_reach_the_group(self):
+        """
+        Одно правило на всех семи: постим, если болталка ИЛИ вызывающий явно
+        попросил. Ответ при этом генерируется и уезжает вызывающему по HTTP —
+        молчит именно ГРУППА.
+        """
+        r = await bot.handle_task(_FakeRequest({"message": "Чё за идеи?"}))
+        self.assertEqual(self.generated, ["Чё за идеи?"])
+        self.assertEqual(self.sent, [], "личный ответ утёк в общий чат")
         self.assertEqual(r.status, 200)
 
     async def test_second_call_on_the_same_text_is_silent(self):
@@ -159,9 +178,11 @@ class TestHandleTaskDedup(unittest.IsolatedAsyncioTestCase):
         # сообщение. Замок бы глушил её ровно там, где две реплики и задуманы.
         await bot.claim_answer("[Болталка] что там")
         await bot.handle_task(_FakeRequest(
-            {"message": "[Болталка] что там", "source": "BANTER", "depth": 1}))
+            {"message": "[Болталка] что там", "source": "BANTER", "depth": 1,
+             "thread_id": "T9"}))
         self.assertEqual(self.generated, ["[Болталка] что там"])
         self.assertEqual(self.sent, ["ответ Гослинга"])
+        self.assertEqual(self.threads, ["T9"], "нить всплеска не доехала до ленты")
 
 
 if __name__ == "__main__":
